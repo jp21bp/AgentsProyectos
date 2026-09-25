@@ -1,0 +1,30 @@
+Secciones:
+---C6---
+* Estilo Antiguo
+* LangChain Introduccion
+  - Chain Basico
+  - RAG Chain
+  - Funcion al modelo
+  - Creando fallbacks
+  - LangChain interfaces
+* LangChain Expression Language
+  - Pydantic basico
+  - Convertir Pydantic a OpenAI JSON esquema
+* Extraccion y Tag
+  - Cadena de Tag
+  - Cadena de Extraccion
+  - Ejemplo real: tagging
+  - Ejemplo real: extraccion
+  - Nested chains con custom funciones
+* Herramientas y Routing
+  - OpenAPI -> OpenAI Json str
+  - Creando custom herramientas
+  - "AgentActionMessageLog" vs "AgentFinish"
+  - Cadena con funcion automatica
+* Agente Conversacional
+  - Cadena con short-term mem
+  - Agent chain
+  - Usando mem. largo-plazo
+  - Planilla para custom tool
+  - Todo junto
+
