@@ -28,3 +28,21 @@ Secciones:
   - Planilla para custom tool
   - Todo junto
 
+---- C7 ----
+* ReAct Agente
+  - Clase Agente
+  - ReAct Loop
+* LangGraph Componentes
+  - Explorando Agent State
+  - Creando LG Clase Agente
+  - Explorando LG Agente
+* Agentic Search Tool
+  - Busqeudad regular, scrapping, y formateo de scrape
+  - Agentic busquedad
+  - Mejor visualizacion de dictionarios
+* Persistence y Streaming
+  - Agente con in-mem persistence
+  - Haciendo streaming con {"configurable"}
+  - Explorando importancia de threads en persistence
+  - Haciendo Asynch
+

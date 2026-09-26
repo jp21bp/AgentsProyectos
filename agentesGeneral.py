@@ -38,7 +38,9 @@ Secciones:
 
 """
 #########################################################################
+#########################################################################
 ### C6 ###
+#########################################################################
 #########################################################################
     # Estilo Antiguo #
 import openai
@@ -174,7 +176,7 @@ final_response = openai.ChatCompletion.create(
 
 
 
-
+#########################################################################
 #########################################################################
     # LangChain Introduccion #
 from langchain.prompts import ChatPromptTemplate
@@ -364,7 +366,7 @@ for t in chain_one.stream({"topic": "bears"}):
 
 
 
-
+#########################################################################
 #################################################################
     # LangChain Expression Language #
 from pydantic import BaseModel
@@ -452,7 +454,7 @@ chain_one.invoke('hi!')
 
 
 
-
+#########################################################################
 #############################################################
     # Extraccion y Tag #
 from langchain.prompts import ChatPromptTemplate
@@ -630,7 +632,7 @@ nested_cadena = prep | extract_chain.map() | flatten
 
 
 
-
+#########################################################################
 ############################################################
     # Herramientas y Routing #
 from langchain.tools import tool
@@ -1004,7 +1006,7 @@ chain_two.invoke({"input": "hi!"})
 
 
 
-
+#########################################################################
 ###############################################################
     # Agente conversacional #
 from langchain.chat_models import ChatOpenAI
@@ -1217,3 +1219,679 @@ dashboard = pn.Column(
     pn.Tabs(('Conversation', tab1))
 )
 dashboard
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#########################################################################
+#########################################################################
+    ### C7 ###
+#########################################################################
+#########################################################################
+    # ReAct agente #
+import openai
+import re
+import httpx
+import os
+from dotenv import load_dotenv
+from openai import OpenAI
+
+
+
+##### Clase Agente
+#### Prompt
+prompt = """
+You run in a loop of Thought, Action, PAUSE, Observation.
+At the end of the loop you output an Answer
+Use Thought to describe your thoughts about the question you have been asked.
+Use Action to run one of the actions available to you - then return PAUSE.
+Observation will be the result of running those actions.
+
+Your available actions are:
+
+calculate:
+e.g. calculate: 4 * 7 / 3
+Runs a calculation and returns the number - uses Python so be sure to use floating point syntax if necessary
+
+average_dog_weight:
+e.g. average_dog_weight: Collie
+returns average weight of a dog when given the breed
+
+Example session:
+
+Question: How much does a Bulldog weigh?
+Thought: I should look the dogs weight using average_dog_weight
+Action: average_dog_weight: Bulldog
+PAUSE
+
+You will be called again with this:
+
+Observation: A Bulldog weights 51 lbs
+
+You then output:
+
+Answer: A bulldog weights 51 lbs
+""".strip()
+#### Funciones
+def calculate(what):
+    return eval(what)
+
+def average_dog_weight(name):
+    if name in "Scottish Terrier": 
+        return("Scottish Terriers average 20 lbs")
+    elif name in "Border Collie":
+        return("a Border Collies average weight is 37 lbs")
+    elif name in "Toy Poodle":
+        return("a toy poodles average weight is 7 lbs")
+    else:
+        return("An average dog weights 50 lbs")
+
+known_actions = {
+    "calculate": calculate,
+    "average_dog_weight": average_dog_weight
+}
+#### Modelo General
+client = OpenAI()
+#### Clase 
+class Agent:
+    def __init__(self, system=""):
+        # Initializing Agent
+        self.system = system
+        self.messages = []
+        if self.system:
+            self.messages.append({"role": "system", "content": system})
+
+    def __call__(self, message):
+        # Logic for what agent will do
+        self.messages.append({"role": "user", "content": message})
+        result = self.execute()
+        self.messages.append({"role": "assistant", "content": result})
+        return result
+
+    def execute(self):
+        completion = client.chat.completions.create(
+                        model="gpt-4o", 
+                        temperature=0,
+                        messages=self.messages)
+        return completion.choices[0].message.content
+#### Inicializacion
+abot = Agent(prompt)
+#### Invocacion
+result = abot("How much does a toy poodle weigh?")
+print(result)
+    #Output:
+    # Thought: I should look up the average weight of a Toy Poodle using the average_dog_weight action.
+             # Action: average_dog_weight: Toy Poodle
+             # PAUSE
+result = average_dog_weight("Toy Poodle")
+print(result)
+    #Output: 'a toy poodles average weight is 7 lbs'
+next_prompt = "Observation: {}".format(result)
+abot(next_prompt)
+    #Output: 'Answer: A Toy Poodle weighs an average of 7 lbs.'
+print(abot.messages)
+    #Output:
+    #[{'role': 'system',
+        #'content': 'You run in a loop of Thought, Action, PAUSE, Observation.\nAt the end of the loop you output an Answer\nUse Thought to describe your thoughts about the question you have been asked.\nUse Action to run one of the actions available to you - then return PAUSE.\nObservation will be the result of running those actions.\n\nYour available actions are:\n\ncalculate:\ne.g. calculate: 4 * 7 / 3\nRuns a calculation and returns the number - uses Python so be sure to use floating point syntax if necessary\n\naverage_dog_weight:\ne.g. average_dog_weight: Collie\nreturns average weight of a dog when given the breed\n\nExample session:\n\nQuestion: How much does a Bulldog weigh?\nThought: I should look the dogs weight using average_dog_weight\nAction: average_dog_weight: Bulldog\nPAUSE\n\nYou will be called again with this:\n\nObservation: A Bulldog weights 51 lbs\n\nYou then output:\n\nAnswer: A bulldog weights 51 lbs'},
+        #{'role': 'user', 'content': 'How much does a toy poodle weigh?'},
+        #{'role': 'assistant',
+        #'content': 'Thought: I should look up the average weight of a Toy Poodle using the average_dog_weight action.\nAction: average_dog_weight: Toy Poodle\nPAUSE'},
+        #{'role': 'user',
+        #'content': 'Observation: a toy poodles average weight is 7 lbs'},
+        #{'role': 'assistant',
+        #'content': 'Answer: A Toy Poodle weighs an average of 7 lbs.'}]
+
+
+
+
+
+
+
+
+##### ReAct Loop
+#### Regex (para parar)
+action_re = re.compile('^Action: (\w+): (.*)$')   
+#### Funciones hasta ahora
+known_actions = {
+    "calculate": calculate,
+    "average_dog_weight": average_dog_weight
+}
+#### Loop fcn
+def query(question, max_turns=5):
+    i = 0
+    bot = Agent(prompt)
+    next_prompt = question
+    while i < max_turns:
+        i += 1
+        result = bot(next_prompt)
+        print(result)
+        actions = [
+            action_re.match(a) 
+            for a in result.split('\n') 
+            if action_re.match(a)
+        ]
+        if actions:
+            # There is an action to run
+            action, action_input = actions[0].groups()
+            if action not in known_actions:
+                raise Exception("Unknown action: {}: {}".format(action, action_input))
+            print(" -- running {} {}".format(action, action_input))
+            observation = known_actions[action](action_input)
+            print("Observation:", observation)
+            next_prompt = "Observation: {}".format(observation)
+        else:
+            return
+#### Invocacion
+question = """I have 2 dogs, a border collie and a scottish terrier. \
+What is their combined weight"""
+query(question)
+    #Output:
+    # Thought: I need to find the average weight of both a Border Collie and a Scottish Terrier, then add them together to get the combined weight.
+            # Action: average_dog_weight: Border Collie
+            # PAUSE
+            #  -- running average_dog_weight Border Collie
+            # Observation: a Border Collies average weight is 37 lbs
+            # Action: average_dog_weight: Scottish Terrier
+            # PAUSE
+            #  -- running average_dog_weight Scottish Terrier
+            # Observation: Scottish Terriers average 20 lbs
+            # Thought: Now that I have the average weights of both dogs, I can calculate their combined weight by adding the two values together.
+            # Action: calculate: 37 + 20
+            # PAUSE
+            #  -- running calculate 37 + 20
+            # Observation: 57
+            # Answer: The combined weight of a Border Collie and a Scottish Terrier is 57 lbs.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#########################################################################
+###############################################################
+    # Langgraph Componentes #
+from langgraph.graph import StateGraph, END
+from typing import TypedDict, Annotated, Union
+import operator
+from langchain_core.messages import AnyMessage, SystemMessage, \
+    HumanMessage, ToolMessage, AgentAction, AgentFinish
+from langchain_openai import ChatOpenAI
+from langchain_community.tools.tavily_search import TavilySearchResults
+from IPython.display import Image
+
+
+
+##### Explorando Agent State
+#### Simple
+class AgentState(TypedDict):
+    messages: Annotated[list[AnyMessage], operator.add]
+    # "AnyMessage" = umbrella for all "Message" types
+    # "operator.add" = "Messages" will be APPENDED to previous "Message"
+    # "Annotated" = allows for specifying metadata details 
+        # Syntax: "Annotated[Type, meta1, meta2, ...]"
+#### Complejo
+class ComplexAgentState(TypedDict):
+    inputs: str
+    chat_history: list[AnyMessage]
+    agent_outcome: Union[AgentAction, AgentFinish, None]
+        #"Union" = can be ONLY one of the listed types
+    intermediate_steps: Annotated[
+        list[tuple[AgentAction, str]], 
+        operator.add
+    ]
+
+
+
+
+
+
+##### Creando LG Clase Agente
+#### Clase
+class Agent:
+
+    def __init__(self, model, tools, system=""):
+        # Creates the graph itself
+        self.system = system
+        graph = StateGraph(AgentState)
+        graph.add_node("llm", self.call_openai)
+        graph.add_node("action", self.take_action)
+        graph.add_conditional_edges(
+            "llm",
+            self.exists_action,
+            {True: "action", False: END}
+        )
+        graph.add_edge("action", "llm")
+        graph.set_entry_point("llm")
+        self.graph = graph.compile()
+        self.tools = {t.name: t for t in tools}
+        self.model = model.bind_tools(tools)
+
+    def exists_action(self, state: AgentState):
+        result = state['messages'][-1]
+        return len(result.tool_calls) > 0
+
+    def call_openai(self, state: AgentState):
+        messages = state['messages']
+        if self.system:
+            messages = [SystemMessage(content=self.system)] + messages
+        message = self.model.invoke(messages)
+        return {'messages': [message]}
+
+    def take_action(self, state: AgentState):
+        tool_calls = state['messages'][-1].tool_calls
+        results = []
+        for t in tool_calls:
+            print(f"Calling: {t}")
+            if not t['name'] in self.tools:      # check for bad tool name from LLM
+                print("\n ....bad tool name....")
+                result = "bad tool name, retry"  # instruct LLM to retry if bad
+            else:
+                result = self.tools[t['name']].invoke(t['args'])
+            results.append(ToolMessage(tool_call_id=t['id'], name=t['name'], content=str(result)))
+        print("Back to the model!")
+        return {'messages': results}
+#### Inicializacion
+prompt = """You are a smart research assistant. Use the search engine to look up information. \
+You are allowed to make multiple calls (either together or in sequence). \
+Only look up information when you are sure of what you want. \
+If you need to look up some information before asking a follow up question, you are allowed to do that!
+"""
+tool = TavilySearchResults(max_results=4)
+model = ChatOpenAI(model="gpt-3.5-turbo") 
+abot = Agent(model, [tool], system=prompt)
+#### Visualizando grafo agente
+Image(abot.graph.get_graph().draw_png())
+
+
+
+
+
+
+
+##### Explorando LG Agente
+#### Simple query
+tmp_query = "What is the weather in sf?"
+messages = [HumanMessage(content=tmp_query)]
+result = abot.graph.invoke({"messages": messages})
+print(result)
+    #Output:
+    # {'messages': [
+    #     HumanMessage(content='What is the weather in sf?'),
+    #     AIMessage(content='', additional_kwargs={'tool_calls': [{'id': 'call_PvPN1v7bHUxOdyn4J2xJhYOX', 'function': {'arguments': '{"query":"weather in San Francisco"}', 'name': 'tavily_search_results_json'}, 'type': 'function'}]}, response_metadata={'token_usage': {'completion_tokens': 21, 'prompt_tokens': 153, 'total_tokens': 174, 'prompt_tokens_details': {'cached_tokens': 0, 'audio_tokens': 0}, 'completion_tokens_details': {'reasoning_tokens': 0, 'audio_tokens': 0, 'accepted_prediction_tokens': 0, 'rejected_prediction_tokens': 0}}, 'model_name': 'gpt-3.5-turbo', 'system_fingerprint': None, 'finish_reason': 'tool_calls', 'logprobs': None}, id='run-9c04deba-1c3b-49ce-a45c-5269f4b0c802-0', tool_calls=[{'name': 'tavily_search_results_json', 'args': {'query': 'weather in San Francisco'}, 'id': 'call_PvPN1v7bHUxOdyn4J2xJhYOX'}]),
+    #     ToolMessage(content='[{\'url\': \'https://www.peoplesweather.com/weather/San+Francisco/?date=2025-10-24\', \'content\': \'Home\\n Weather Forecast\\n News & Highlights\\n MyPhoto\\n Competitions\\n Contact Us\\n\\n# Weather for San Francisco\\n\\n Weather\\n United States\\n San Francisco\\n\\n##### Friday 24 October 2025\\n\\n|  |  |\\n --- |\\n| 14°CFeels like: 14°C | W / 7km/h  Light Breeze |\\n| Partly Cloudy. Cool |\\n\\n|  |  |\\n --- |\\n| Pressure | 1018mb |\\n| Humidity | 87% |\\n| Rain | 0% |\\n| Cloud Cover | 63% |\\n| Dew Point | 12°C |\\n\\n|  |\\n\\n| This Afternoon |\\n| 19°C | SW / 10km/h  Light Breeze |\\n| Mostly Cloudy. Mild |\\n\\n|  |\'}, {\'url\': \'https://weathershogun.com/weather/usa/ca/san-francisco/480/october/2025-10-24\', \'content\': "Friday, October 24, 2025. San Francisco, CA - Weather Forecast \\n\\n☰\\n\\nSan Francisco, CA\\n\\nImage 1: WeatherShogun.com\\n\\nHomeContactBrowse StatesPrivacy PolicyTerms and Conditions\\n\\n°F)°C)\\n\\n❮\\n\\nTodayTomorrowHourly7 days30 daysOctober\\n\\n❯\\n\\nSan Francisco, California Weather: \\n\\nActive Weather Warnings\\n\\n   Beach Hazards Statement\\n\\nFriday, October 24, 2025\\n\\nDay 64°\\n\\nNight 55°\\n\\nPrecipitation 0 %\\n\\nWind 9 mph\\n\\nUV Index (0 - 11+)3\\n\\nSaturday [...] WHAT: A moderate to long period northwesterly swell will result\\n\\nin breaking waves of 15 to 20 feet, with the highest waves up to\\n\\n25 feet in favored locations, and an increased risk for sneaker\\n\\nwaves and rip currents.\\n\\nWHERE: San Francisco, Coastal North Bay Including Point Reyes\\n\\nNational Seashore, San Francisco Peninsula Coast, Northern\\n\\nMonterey Bay and Southern Monterey Bay and Big Sur Coast\\n\\nCounties.\\n\\nWHEN: From late tonight through late Sunday night. [...] Hourly\\n   Today\\n   Current Air Quality\\n   Hourly Air Quality Forecast\\n   7 days\\n   30 days\\n\\nWeather Forecast History\\n\\nLast Year\'s Weather on This Day (October 24, 2024)\\n\\n### Day\\n\\n73°\\n\\n### Night\\n\\n52°\\n\\n#### Wind\\n\\n4 mph\\n\\n#### Precipitation\\n\\n0\\n\\nWeather Alerts and Warnings for\\n\\nModerate Expected Likely\\n\\n### Beach Hazards Statement\\n\\nBeach Hazards Statement issued October 23 at 12:50PM PDT until October 27 at 3:00AM PDT by NWS San Francisco CA\\n\\nOct 24, 3:00 AM → Oct 27, 3:00 AM"}, {\'url\': \'https://wu-next-prod.wunderground.com/hourly/us/ca/san-francisco/KSFO/date/2025-10-24\', \'content\': \'date\\\\_range View Calendar Forecast\\n\\nTop Video Stories\\n\\nplay\\\\_circle\\\\_outline\\n\\nSouth Braces For Severe Storms, Flooding Friday-Sunday\\n\\n[00:01:07]\\n\\n keyboard\\\\_arrow\\\\_left\\n\\n keyboard\\\\_arrow\\\\_right\\n\\nSee more Top Video Stories\\n\\nAdditional Conditions\\n\\nPressure\\n\\n30.08 °in\\n\\nVisibility\\n\\n9 °miles\\n\\nClouds\\n\\nMostly Cloudy\\n\\nDew Point\\n\\n55 °F\\n\\nHumidity\\n\\n91 °%\\n\\nRainfall\\n\\n0 °in\\n\\nSnow Depth\\n\\n0 °in\\n\\nKSFO Station History\\n\\nAlmanac for October 24, 2025\\n\\nForecast\\n\\nAverage \\\\\\n\\nRecord\\n\\nTemperature\\n\\nHigh\\n\\n65 °F\\n\\n71 °F\'}, {\'url\': \'https://www.weather25.com/north-america/usa/california/san-francisco?page=month&month=October\', \'content\': \'United States England Australia Canada\\n\\n°F °C\\n\\nSan Francisco\\n\\nWeather in October 2025\\n\\n1. Home\\n2. North America\\n3. United States\\n4. California\\n5. San Francisco\\n6. October\\n\\nLocation was added to My Locations\\n\\nLocation was removed from My Locations\\n\\n# San Francisco weather in October 2025\\n\\nClick on a day for an hourly weather forecast\\n\\nOct 19\\n\\n0 mm\\n\\n20° / 12°Oct 20\\n\\n0 mm\\n\\n23° / 14°Oct 21\\n\\n0 mm\\n\\n21° / 12°Oct 22\\n\\n0 mm\\n\\n17° / 12°Thursday\\n\\nOct 23\\n\\n0 mm\\n\\n18° / 14°Friday\\n\\nOct 24\\n\\n0 mm\\n\\n18° / 14°Saturday [...] The wather in San Francisco in October can vary between cold and nice weather days. Expect a few rainy days but usually not more than 3.\\n\\nOur weather forecast can give you a great sense of what weather to expect in San Francisco in October 2025.\\n\\nIf you’re planning to visit San Francisco in the near future, we highly recommend that you review the 14 day weather forecast for San Francisco before you arrive.\\n\\nTemperatures\\n\\n23° / 13°\\n\\nRainy Days\\n\\n1\\n\\nSnowy Days\\n\\n0\\n\\nDry Days\\n\\n30\\n\\nRainfall\\n\\n26\\n\\nmm [...] Oct 25\\n\\n0.8 mm\\n\\n16° / 14°Sunday\\n\\nOct 26\\n\\n1 mm\\n\\n16° / 12°Monday\\n\\nOct 27\\n\\n0.8 mm\\n\\n18° / 15°Tuesday\\n\\nOct 28\\n\\n0 mm\\n\\n20° / 14°Wednesday\\n\\nOct 29\\n\\n0 mm\\n\\n23° / 15°Thursday\\n\\nOct 30\\n\\n0 mm\\n\\n23° / 16°Friday\\n\\nOct 31\\n\\n0 mm\\n\\n22° / 17°Saturday\\n\\nNov 1\\n\\n0 mm\\n\\n21° / 17° NextMonth >>\\n\\n## The average weather in San Francisco in October\\n\\nThe temperatures in San Francisco in October are comfortable with low of 13°C and and high up to 23°C.\'}]', name='tavily_search_results_json', tool_call_id='call_PvPN1v7bHUxOdyn4J2xJhYOX'),
+    #     AIMessage(content='The weather in San Francisco today is partly cloudy with a temperature of 14°C. The humidity is at 87%, and there is a light breeze from the west at 7km/h. The cloud cover is at 63% with no expected rain.', response_metadata={'token_usage': {'completion_tokens': 53, 'prompt_tokens': 1645, 'total_tokens': 1698, 'prompt_tokens_details': {'cached_tokens': 0, 'audio_tokens': 0}, 'completion_tokens_details': {'reasoning_tokens': 0, 'audio_tokens': 0, 'accepted_prediction_tokens': 0, 'rejected_prediction_tokens': 0}}, 'model_name': 'gpt-3.5-turbo', 'system_fingerprint': None, 'finish_reason': 'stop', 'logprobs': None}, id='run-8c8e5d00-5251-457d-8d6e-d2419e29bb27-0')
+    # ]}
+for msg in result['messages']: print(type(msg))
+    # Output:
+    # <class 'langchain_core.messages.human.HumanMessage'>
+    # <class 'langchain_core.messages.ai.AIMessage'>
+    # <class 'langchain_core.messages.tool.ToolMessage'>
+    # <class 'langchain_core.messages.ai.AIMessage'>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#########################################################################
+###############################################################
+    # Agentic Search Tool #
+from dotenv import load_dotenv
+import os
+from tavily import TavilyClient
+import requests
+from bs4 import BeautifulSoup
+from duckduckgo_search import DDGS
+import re
+import json
+from pygments import highlight, lexers, formatters
+# load environment variables from .env file
+_ = load_dotenv()
+
+
+
+##### Busqeudad regular, scrapping, y formateo de scrape
+    # DDG solo da urls, se necesita scrapping
+#### Setup Duckduckgo y search funcion
+ddg = DDGS()
+def search(query, max_results=6):
+    try:
+        results = ddg.text(query, max_results=max_results)
+        return [i["href"] for i in results]
+    except Exception as e:
+        print(f"returning previous results due to exception reaching ddg.")
+        results = [ # cover case where DDG rate limits due to high deeplearning.ai volume
+            "https://weather.com/weather/today/l/USCA0987:1:US",
+            "https://weather.com/weather/hourbyhour/l/54f9d8baac32496f6b5497b4bf7a277c3e2e6cc5625de69680e6169e7e38e9a8",
+        ]
+        return results  
+#### Scrape fcn
+def scrape_weather_info(url):
+    """Scrape content from the given URL"""
+    if not url:
+        return "Weather information could not be found."
+    
+    # fetch data
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    response = requests.get(url, headers=headers)
+    if response.status_code != 200:
+        return "Failed to retrieve the webpage."
+
+    # parse result
+    soup = BeautifulSoup(response.text, 'html.parser')
+    return soup
+#### Invocacion de funcion
+city = "San Francisco"
+tmp_query2 = f"""
+    what is the current weather in {city}?
+    Should I travel there today?
+    "weather.com"
+"""
+for i in search(tmp_query2):
+    print(i)
+    #output:
+    # returning previous results due to exception reaching ddg.
+        # https://weather.com/weather/today/l/USCA0987:1:US
+        # https://weather.com/weather/hourbyhour/l/54f9d8baac32496f6b5497b4bf7a277c3e2e6cc5625de69680e6169e7e38e9a8
+url = search(tmp_query2)[0]
+soup = scrape_weather_info(url)
+print(str(soup.body)[:50000])
+    # OUtput: HTML
+#### Convirtiendo HTML a human-readible
+### Identificando tags
+weather_data = []
+for tag in soup.find_all(['h1', 'h2', 'h3', 'p']):
+    text = tag.get_text(" ", strip=True)
+    weather_data.append(text)
+### Combinando todos los tags
+weather_data = "\n".join(weather_data)
+### remove all spaces from the combined text
+weather_data = re.sub(r'\s+', ' ', weather_data)
+print(weather_data)
+    #Output: HTML Readible
+
+
+
+
+
+##### Agentic busquedad
+#### Setup
+client = TavilyClient(api_key=os.environ.get("TAVILY_API_KEY"))
+#### run search
+result = client.search(tmp_query2, max_results=1)
+#### print first result
+data = result["results"][0]["content"]
+print(type(result))
+    #Output: dictionary, lo que AIs necesitan
+
+
+
+
+##### Mejor visualizacion de dictionarios
+#### parse JSON
+parsed_json = json.loads(data.replace("'", '"'))
+#### pretty print JSON with syntax highlighting
+formatted_json = json.dumps(parsed_json, indent=4)
+colorful_json = highlight(formatted_json,
+                          lexers.JsonLexer(),
+                          formatters.TerminalFormatter())
+
+print(colorful_json)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#########################################################################
+#########################################################################
+    # Persistence y Streaming #
+#### SEt up environemt
+from dotenv import load_dotenv
+_ = load_dotenv()
+from langgraph.graph import StateGraph, END
+from typing import TypedDict, Annotated
+import operator
+from langchain_core.messages import AnyMessage, SystemMessage, HumanMessage, ToolMessage
+from langchain_openai import ChatOpenAI
+from langchain_community.tools.tavily_search import TavilySearchResults
+from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.checkpoint.aiosqlite import AsyncSqliteSaver
+
+
+
+
+
+
+##### Agente con in-mem persistence
+#### Inicializando in-mem persistence
+memory = SqliteSaver.from_conn_string(":memory:")
+#### Setup general
+tool = TavilySearchResults(max_results=2)
+class AgentState(TypedDict):
+    messages: Annotated[list[AnyMessage], operator.add]
+#### Agente class
+class Agent:
+    def __init__(self, model, tools, checkpointer, system=""):
+        self.system = system
+        graph = StateGraph(AgentState)
+        graph.add_node("llm", self.call_openai)
+        graph.add_node("action", self.take_action)
+        graph.add_conditional_edges(
+            "llm",
+            self.exists_action, 
+            {True: "action", False: END}
+        )
+        graph.add_edge("action", "llm")
+        graph.set_entry_point("llm")
+        self.graph = graph.compile(checkpointer=checkpointer)
+            # In-mem persistence
+        self.tools = {t.name: t for t in tools}
+        self.model = model.bind_tools(tools)
+
+    def call_openai(self, state: AgentState):
+        messages = state['messages']
+        if self.system:
+            messages = [SystemMessage(content=self.system)] + messages
+        message = self.model.invoke(messages)
+        return {'messages': [message]}
+
+    def exists_action(self, state: AgentState):
+        result = state['messages'][-1]
+        return len(result.tool_calls) > 0
+
+    def take_action(self, state: AgentState):
+        tool_calls = state['messages'][-1].tool_calls
+        results = []
+        for t in tool_calls:
+            print(f"Calling: {t}")
+            result = self.tools[t['name']].invoke(t['args'])
+            results.append(ToolMessage(tool_call_id=t['id'], name=t['name'], content=str(result)))
+        print("Back to the model!")
+        return {'messages': results}
+#### Inicializando Agente
+prompt = """You are a smart research assistant. Use the search engine to look up information. \
+You are allowed to make multiple calls (either together or in sequence). \
+Only look up information when you are sure of what you want. \
+If you need to look up some information before asking a follow up question, you are allowed to do that!
+"""
+model = ChatOpenAI(model="gpt-4o")
+abot = Agent(model, [tool], system=prompt, checkpointer=memory)
+
+
+
+
+
+
+
+
+
+##### Haciendo streaming con {"configurable"}
+#### Inicializando stream con thread
+messages = [HumanMessage(content="What is the weather in sf?")]
+thread = {"configurable": {"thread_id": "1"}}
+for event in abot.graph.stream({"messages": messages}, thread):
+    for v in event.values():
+        print(v['messages'])
+    #Output:
+    # [AIMessage(content='', additional_kwargs={'tool_calls': [{'id': 'call_bmfLa92f6oAIKN9KvXtqbKDz', 'function': {'arguments': '{"query":"current weather in San Francisco"}', 'name': 'tavily_search_results_json'}, 'type': 'function'}]}, response_metadata={'token_usage': {'completion_tokens': 22, 'prompt_tokens': 151, 'total_tokens': 173, 'prompt_tokens_details': {'cached_tokens': 0, 'audio_tokens': 0}, 'completion_tokens_details': {'reasoning_tokens': 0, 'audio_tokens': 0, 'accepted_prediction_tokens': 0, 'rejected_prediction_tokens': 0}}, 'model_name': 'gpt-4o', 'system_fingerprint': 'fp_831e067d82', 'finish_reason': 'tool_calls', 'logprobs': None}, id='run-ec74a787-2389-4bb4-8e61-35d32024c8c8-0', tool_calls=[{'name': 'tavily_search_results_json', 'args': {'query': 'current weather in San Francisco'}, 'id': 'call_bmfLa92f6oAIKN9KvXtqbKDz'}])]
+        # Calling: {'name': 'tavily_search_results_json', 'args': {'query': 'current weather in San Francisco'}, 'id': 'call_bmfLa92f6oAIKN9KvXtqbKDz'}
+        # Back to the model!
+        # [ToolMessage(content='[{\'url\': \'https://www.peoplesweather.com/weather/San+Francisco/?date=2025-10-24\', \'content\': \'# Weather for San Francisco\\n\\n##### Friday 24 October 2025\\n\\n|  |  |  |\\n --- \\n|  | 14°CFeels like: 14°C | W / 7km/h  Light Breeze |\\n| Overcast. Cool | | |\\n\\n|  |  |\\n --- |\\n| Pressure | 1017mb |\\n| Humidity | 90% |\\n| Rain | 0% |\\n| Cloud Cover | 98% |\\n| Dew Point | 13°C |\\n\\n|  |  |  |\\n --- \\n| Post Midnight | | |\\n|  | 14°C | WSW / 4km/h  Light Air |\\n| Overcast. Cool | | |\\n\\n|  |  |  |\\n --- \\n| Morning | | |\\n|  | 15°C | SSW / 9km/h  Light Breeze |\\n| Chance of Rain. Cool | | |\'}, {\'url\': \'https://www.accuweather.com/en/us/san-francisco/94103/weather-forecast/347629\', \'content\': "Sat\\n\\n10/25\\n\\nA little morning rain\\n\\nMostly cloudy\\n\\nSun\\n\\n10/26\\n\\nAn afternoon shower in spots\\n\\nPartly cloudy\\n\\nMon\\n\\n10/27\\n\\nMostly sunny\\n\\nClear\\n\\nTue\\n\\n10/28\\n\\nBeautiful with sunshine\\n\\nClear to partly cloudy\\n\\nWed\\n\\n10/29\\n\\nMostly sunny and pleasant\\n\\nClear\\n\\nThu\\n\\n10/30\\n\\nMostly sunny and pleasant\\n\\nMainly clear\\n\\nFri\\n\\n10/31\\n\\nMostly sunny\\n\\nClear\\n\\nSat\\n\\n11/1\\n\\nSunshine\\n\\nIncreasing clouds\\n\\nSun\\n\\n11/2\\n\\nPartly sunny\\n\\nPartly cloudy\\n\\n## Sun & Moon\\n\\n## Air Quality [...] Tonight: Mostly cloudy with a shower toward dawn\\nLo: 56°\\n\\n## Current Weather\\n\\n12:12 PM\\n\\n## Looking Ahead\\n\\nExpect showery weather before dawn tomorrow through tomorrow morning\\n\\n## San Francisco Weather Radar\\n\\nSan Francisco Weather Radar\\n\\n## Hourly Weather\\n\\nrain drop\\n\\nrain drop\\n\\nrain drop\\n\\nrain drop\\n\\nrain drop\\n\\nrain drop\\n\\nrain drop\\n\\nrain drop\\n\\nrain drop\\n\\nrain drop\\n\\nrain drop\\n\\nrain drop\\n\\n## 10-Day Weather Forecast\\n\\nToday\\n\\n10/24\\n\\nClouds yielding to some sun\\n\\nNight: Rather cloudy, a shower late [...] # San Francisco, CA\\n\\nSan Francisco\\n\\nCalifornia\\n\\n## Around the Globe\\n\\nAround the Globe\\n\\n### Hurricane Tracker\\n\\n### Severe Weather\\n\\n### Radar & Maps\\n\\n### News & Features\\n\\n### Astronomy\\n\\n### Business\\n\\n### Climate\\n\\n### Health\\n\\n### Recreation\\n\\n### Sports\\n\\n### Travel\\n\\n### Warnings\\n\\n### Data Suite\\n\\n### Forensics\\n\\n### Advertising\\n\\n### Superior Accuracy™\\n\\n### Video\\n\\n### Winter Center\\n\\n## Today\\n\\n## Today\'s Weather\\n\\nFri, Oct 24\\n\\nClouds yielding to some sun\\nHi: 65°"}]', name='tavily_search_results_json', tool_call_id='call_bmfLa92f6oAIKN9KvXtqbKDz')]
+        # [AIMessage(content='The current weather in San Francisco is overcast and cool with a temperature of 14°C (feels like 14°C). There is a light breeze coming from the west at 7 km/h. The humidity is high at 90%, and the cloud cover is at 98%, but there is no rain expected. The pressure is measured at 1017 mb, and the dew point is 13°C.', response_metadata={'token_usage': {'completion_tokens': 85, 'prompt_tokens': 910, 'total_tokens': 995, 'prompt_tokens_details': {'cached_tokens': 0, 'audio_tokens': 0}, 'completion_tokens_details': {'reasoning_tokens': 0, 'audio_tokens': 0, 'accepted_prediction_tokens': 0, 'rejected_prediction_tokens': 0}}, 'model_name': 'gpt-4o', 'system_fingerprint': 'fp_65564d8ba5', 'finish_reason': 'stop', 'logprobs': None}, id='run-f7472989-3c4f-45f1-90ef-cf8bcfc783c6-0')]
+### Checking out persistence by continuing conversation 
+messages = [HumanMessage(content="What about in la?")]
+thread = {"configurable": {"thread_id": "1"}}
+for event in abot.graph.stream({"messages": messages}, thread):
+    for v in event.values():
+        print(v)
+    #Output:
+    # {'messages': [AIMessage(content='', additional_kwargs={'tool_calls': [{'id': 'call_Hf2tY07frZGgFcifdWR270za', 'function': {'arguments': '{"query":"current weather in Los Angeles"}', 'name': 'tavily_search_results_json'}, 'type': 'function'}]}, response_metadata={'token_usage': {'completion_tokens': 22, 'prompt_tokens': 1007, 'total_tokens': 1029, 'prompt_tokens_details': {'cached_tokens': 0, 'audio_tokens': 0}, 'completion_tokens_details': {'reasoning_tokens': 0, 'audio_tokens': 0, 'accepted_prediction_tokens': 0, 'rejected_prediction_tokens': 0}}, 'model_name': 'gpt-4o', 'system_fingerprint': 'fp_65564d8ba5', 'finish_reason': 'tool_calls', 'logprobs': None}, id='run-b3494a6e-12ee-4698-bd0e-e768be9ce37d-0', tool_calls=[{'name': 'tavily_search_results_json', 'args': {'query': 'current weather in Los Angeles'}, 'id': 'call_Hf2tY07frZGgFcifdWR270za'}])]}
+            # Calling: {'name': 'tavily_search_results_json', 'args': {'query': 'current weather in Los Angeles'}, 'id': 'call_Hf2tY07frZGgFcifdWR270za'}
+            # Back to the model!
+            # {'messages': [ToolMessage(content='[{\'url\': \'https://www.weather25.com/north-america/usa/california/los-angeles?page=month&month=October\', \'content\': \'weather25.com\\nSearch\\nweather in United States\\nRemove from your favorite locations\\nAdd to my locations\\nShare\\nweather in United States\\n\\n# Los Angeles weather in October 2025\\n\\nPartly cloudy\\nPartly cloudy\\nPartly cloudy\\nPartly cloudy\\nClear\\nClear\\nClear\\nClear\\nClear\\nClear\\nOvercast\\nPartly cloudy\\nClear\\nClear\\n\\n## The average weather in Los Angeles in October\\n\\nThe temperatures in Los Angeles in October are comfortable with low of 18°C and and high up to 27°C. [...] | 19 Sunny 28° /19° | 20 Sunny 28° /19° | 21 Sunny 27° /19° | 22 Sunny 24° /18° | 23 Partly cloudy 24° /17° | 24 Partly cloudy 29° /13° | 25 Partly cloudy 22° /15° |\\n| 26 Partly cloudy 23° /15° | 27 Partly cloudy 26° /15° | 28 Sunny 29° /19° | 29 Sunny 28° /20° | 30 Sunny 26° /20° | 31 Sunny 27° /19° |  | [...] You can expect a few rainy days in Los Angeles during October, but usually the weather is comfortable in October.\\n\\nOur weather forecast can give you a great sense of what weather to expect in Los Angeles in October 2025.\\n\\nIf you’re planning to visit Los Angeles in the near future, we highly recommend that you review the 14 day weather forecast for Los Angeles before you arrive.\\n\\nTemperatures\\nRainy Days\\nSnowy Days\\nDry Days\\nRainfall\\n11.7\'}, {\'url\': \'https://www.accuweather.com/en/us/los-angeles/90012/october-weather/347625\', \'content\': "# Los Angeles, CA\\n\\nLos Angeles\\n\\nCalifornia\\n\\n## Around the Globe\\n\\nAround the Globe\\n\\n### Hurricane Tracker\\n\\n### Severe Weather\\n\\n### Radar & Maps\\n\\n### News & Features\\n\\n### Astronomy\\n\\n### Business\\n\\n### Climate\\n\\n### Health\\n\\n### Recreation\\n\\n### Sports\\n\\n### Travel\\n\\n### Warnings\\n\\n### Data Suite\\n\\n### Forensics\\n\\n### Advertising\\n\\n### Superior Accuracy™\\n\\n### Video\\n\\n### Winter Center\\n\\n## Monthly\\n\\n## October\\n\\n## 2025\\n\\n## Daily\\n\\n## Temperature Graph\\n\\n## Further Ahead\\n\\nFurther Ahead\\n\\n### November 2025 [...] ### December 2025\\n\\n### January 2026\\n\\n## Around the Globe\\n\\nAround the Globe\\n\\n### Hurricane Tracker\\n\\n### Severe Weather\\n\\n### Radar & Maps\\n\\n### News\\n\\n### Video\\n\\n### Winter Center\\n\\nTop Stories\\n\\nHurricane\\n\\nMelissa may reach Category 5, poses great danger to Jamaica, Cuba, Hai...\\n\\n3 hours ago\\n\\nWeather Forecasts\\n\\nWeather troubles brewing for some trick-or-treaters through Halloween\\n\\n2 hours ago\\n\\nHurricane\\n\\nMelissa, future nor\'easter to team up along US East Coast next week\\n\\n1 hour ago\\n\\nHurricane [...] Coast Guard rescues family stranded on island off Cape Cod\\n\\n1 day ago\\n\\nWeather News\\n\\nPolar bears take over abandoned island in Russia\\n\\n4 days ago\\n\\n## Weather Near Los Angeles:\\n\\n...\\n\\n...\\n\\n..."}]', name='tavily_search_results_json', tool_call_id='call_Hf2tY07frZGgFcifdWR270za')]}
+            # {'messages': [AIMessage(content="The current weather in Los Angeles is partly cloudy. The temperatures are comfortable, with a low around 18°C and a high up to 27°C. There is no specific mention of rain, indicating it's likely dry at the moment.", response_metadata={'token_usage': {'completion_tokens': 48, 'prompt_tokens': 1814, 'total_tokens': 1862, 'prompt_tokens_details': {'cached_tokens': 1024, 'audio_tokens': 0}, 'completion_tokens_details': {'reasoning_tokens': 0, 'audio_tokens': 0, 'accepted_prediction_tokens': 0, 'rejected_prediction_tokens': 0}}, 'model_name': 'gpt-4o', 'system_fingerprint': 'fp_65564d8ba5', 'finish_reason': 'stop', 'logprobs': None}, id='run-453482ec-592f-4097-93f6-45292eb8c029-0')]}
+
+
+
+
+
+
+
+##### Explorando importancia de threads en persistence
+messages = [HumanMessage(content="Which one is warmer?")]
+thread = {"configurable": {"thread_id": "1"}}
+    #NOte: THREAD 1
+for event in abot.graph.stream({"messages": messages}, thread):
+    for v in event.values():
+        print(v)
+    #Output:
+    #{'messages': [AIMessage(content='Los Angeles is warmer than San Francisco at the moment. Los Angeles has temperatures ranging from 18°C to 27°C, while San Francisco is currently experiencing a temperature of 14°C.', response_metadata={'token_usage': {'completion_tokens': 39, 'prompt_tokens': 1874, 'total_tokens': 1913, 'prompt_tokens_details': {'cached_tokens': 1792, 'audio_tokens': 0}, 'completion_tokens_details': {'reasoning_tokens': 0, 'audio_tokens': 0, 'accepted_prediction_tokens': 0, 'rejected_prediction_tokens': 0}}, 'model_name': 'gpt-4o', 'system_fingerprint': 'fp_65564d8ba5', 'finish_reason': 'stop', 'logprobs': None}, id='run-703aaf32-db67-4a2b-b2b6-089bf54025ca-0')]}
+
+messages = [HumanMessage(content="Which one is warmer?")]
+thread = {"configurable": {"thread_id": "2"}}
+for event in abot.graph.stream({"messages": messages}, thread):
+    for v in event.values():
+        print(v)
+    #Output:
+    #{'messages': [AIMessage(content="Could you please clarify what you're comparing to determine which is warmer? Are you comparing two specific locations, types of clothing, materials, or something else? Let me know so I can provide the appropriate information.", response_metadata={'token_usage': {'completion_tokens': 43, 'prompt_tokens': 149, 'total_tokens': 192, 'prompt_tokens_details': {'cached_tokens': 0, 'audio_tokens': 0}, 'completion_tokens_details': {'reasoning_tokens': 0, 'audio_tokens': 0, 'accepted_prediction_tokens': 0, 'rejected_prediction_tokens': 0}}, 'model_name': 'gpt-4o', 'system_fingerprint': 'fp_f9f4fb6dbf', 'finish_reason': 'stop', 'logprobs': None}, id='run-b6342196-b872-4f67-8970-b6bf527e419c-0')]}
+
+
+
+
+
+
+
+##### Haciendo Asynch
+#### Setup
+memory = AsyncSqliteSaver.from_conn_string(":memory:")
+abot = Agent(model, [tool], system=prompt, checkpointer=memory)
+#### Actually streaming tokens
+messages = [HumanMessage(content="What is the weather in SF?")]
+thread = {"configurable": {"thread_id": "4"}}
+async for event in abot.graph.astream_events({"messages": messages}, thread, version="v1"):
+    kind = event["event"]
+    if kind == "on_chat_model_stream":
+        content = event["data"]["chunk"].content
+        if content:
+            # Empty content in the context of OpenAI means
+            # that the model is asking for a tool to be invoked.
+            # So we only print non-empty content
+            print(content, end="|")
+    # Output:
+    # Calling: {'name': 'tavily_search_results_json', 'args': {'query': 'current weather in San Francisco'}, 'id': 'call_GiHnpbt7P6kuX4g2n6imqDXI'}
+            # Back to the model!
+            # The| current| weather| in| San| Francisco| is| over|
+            # cast| and| cool|,| with| a| temperature| of| |14|°C| 
+            # (|fe|els| like| |14|°C|).| The| wind| is| coming| 
+            # from| the| west| at| |7| km|/h|,| and| the| humidity| 
+            # is| at| |90|%.| The| cloud| cover| is| |98|%,| and| 
+            # there's| no| rain| expected|.| The| pressure| is| 
+            # |101|7| mb| with| a| dew| point| of| |13|°C|.|
