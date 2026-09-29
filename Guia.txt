@@ -45,4 +45,20 @@ Secciones:
   - Haciendo streaming con {"configurable"}
   - Explorando importancia de threads en persistence
   - Haciendo Asynch
-
+* Humano En Loop
+  - Custom state aggregator
+  - Agente con interrupcion
+  - Implementacion HITL
+  - Modifiando agent state
+  - Time travel modificacion
+  - Debugging LLMs
+* State Snapshot Memory Agent ** Buena **
+  - Planilla para custom agente
+  - Explorando state de custom agente
+  - Time travel con custom agente
+  - Explorando historia post-time travel
+  - Exploring snapshot's parent-child realtion after time travel
+  - Visualize the graph
+  - Modify a prev state to use in new thread
+  - Exploring ".update_state.as_node" param.
+* Essay Writer

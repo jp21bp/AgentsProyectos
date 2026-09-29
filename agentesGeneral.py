@@ -5,6 +5,7 @@ Recalque:
 json.dumps() -> (JSON-)str
 
 Secciones:
+Secciones:
 ---C6---
 * Estilo Antiguo
 * LangChain Introduccion
@@ -34,6 +35,40 @@ Secciones:
   - Planilla para custom tool
   - Todo junto
 
+---- C7 ----
+* ReAct Agente
+  - Clase Agente
+  - ReAct Loop
+* LangGraph Componentes
+  - Explorando Agent State
+  - Creando LG Clase Agente
+  - Explorando LG Agente
+* Agentic Search Tool
+  - Busqeudad regular, scrapping, y formateo de scrape
+  - Agentic busquedad
+  - Mejor visualizacion de dictionarios
+* Persistence y Streaming
+  - Agente con in-mem persistence
+  - Haciendo streaming con {"configurable"}
+  - Explorando importancia de threads en persistence
+  - Haciendo Asynch
+* Humano En Loop
+  - Custom state aggregator
+  - Agente con interrupcion
+  - Implementacion HITL
+  - Modifiando agent state
+  - Time travel modificacion
+  - Debugging LLMs
+* State Snapshot Memory Agent ** Buena **
+  - Planilla para custom agente
+  - Explorando state de custom agente
+  - Time travel con custom agente
+  - Explorando historia post-time travel
+  - Exploring snapshot's parent-child realtion after time travel
+  - Visualize the graph
+  - Modify a prev state to use in new thread
+  - Exploring ".update_state.as_node" param.
+* Essay Writer
 
 
 """
@@ -1895,3 +1930,1006 @@ async for event in abot.graph.astream_events({"messages": messages}, thread, ver
             # is| at| |90|%.| The| cloud| cover| is| |98|%,| and| 
             # there's| no| rain| expected|.| The| pressure| is| 
             # |101|7| mb| with| a| dew| point| of| |13|°C|.|
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#########################################################################
+#########################################################################
+    # Humano En Loop #
+from dotenv import load_dotenv
+_ = load_dotenv()
+from langgraph.graph import StateGraph, END
+from typing import TypedDict, Annotated
+import operator
+from langchain_core.messages import AnyMessage, SystemMessage, HumanMessage, ToolMessage
+from langchain_openai import ChatOpenAI
+from langchain_community.tools.tavily_search import TavilySearchResults
+from langgraph.checkpoint.sqlite import SqliteSaver
+from uuid import uuid4
+from langchain_core.messages import AnyMessage, SystemMessage, HumanMessage, AIMessage
+
+
+
+
+
+
+##### Custom state aggregator
+"""
+In previous examples we've annotated the `messages` state key
+with the default `operator.add` or `+` reducer, which always
+appends new messages to the end of the existing messages array.
+
+Now, to support replacing existing messages, we annotate the
+`messages` key with a customer reducer function, which replaces
+messages with the same `id`, and appends them otherwise.
+"""
+#### Custom aggregator function
+def reduce_messages(left: list[AnyMessage], right: list[AnyMessage]) -> list[AnyMessage]:
+    # assign ids to messages that don't have them
+    for message in right:
+        if not message.id:
+            message.id = str(uuid4())
+    # merge the new messages with the existing messages
+    merged = left.copy()
+    for message in right:
+        for i, existing in enumerate(merged):
+            # replace any existing messages with the same id
+            if existing.id == message.id:
+                merged[i] = message
+                break   ##### SE PUEDE CAMBIAR
+        else:
+            # append any new messages to the end
+            merged.append(message)
+    return merged
+
+
+
+
+
+
+##### Agente con interrupcion
+#### Creando Agente
+### Setup
+memory = SqliteSaver.from_conn_string(":memory:")
+    # Persistence mem. using in-mem
+search_tool = TavilySearchResults(max_results=2)
+class AgentState(TypedDict):
+    messages: Annotated[list[AnyMessage], reduce_messages]
+class Agent:
+    def __init__(self, model, tools, system="", checkpointer=None):
+        self.system = system
+        graph = StateGraph(AgentState)
+        graph.add_node("llm", self.call_openai)
+        graph.add_node("action", self.take_action)
+        graph.add_conditional_edges("llm", self.exists_action, {True: "action", False: END})
+        graph.add_edge("action", "llm")
+        graph.set_entry_point("llm")
+        self.graph = graph.compile(
+            checkpointer=checkpointer,
+            interrupt_before=["action"] ##### IMPORTANTE PARA HITL
+        )
+        self.tools = {t.name: t for t in tools}
+        self.model = model.bind_tools(tools)
+
+    def call_openai(self, state: AgentState):
+        messages = state['messages']
+        if self.system:
+            messages = [SystemMessage(content=self.system)] + messages
+        message = self.model.invoke(messages)
+        return {'messages': [message]}
+
+    def exists_action(self, state: AgentState):
+        print(state)
+        result = state['messages'][-1]
+        return len(result.tool_calls) > 0
+
+    def take_action(self, state: AgentState):
+        tool_calls = state['messages'][-1].tool_calls
+        results = []
+        for t in tool_calls:
+            print(f"Calling: {t}")
+            result = self.tools[t['name']].invoke(t['args'])
+            results.append(ToolMessage(tool_call_id=t['id'], name=t['name'], content=str(result)))
+        print("Back to the model!")
+        return {'messages': results}
+### Init
+prompt = """You are a smart research assistant. Use the search engine to look up information. \
+You are allowed to make multiple calls (either together or in sequence). \
+Only look up information when you are sure of what you want. \
+If you need to look up some information before asking a follow up question, you are allowed to do that!
+"""
+model = ChatOpenAI(model="gpt-3.5-turbo")
+abot = Agent(model, [search_tool], system=prompt, checkpointer=memory)
+
+
+
+
+
+
+
+
+
+
+
+
+##### Analizando Agent State
+#### Empezando conversacion
+    # Ojo: esto va a parar en " interrupt_before=["action"]"
+messages = [HumanMessage(content="Whats the weather in SF?")]
+thread = {"configurable": {"thread_id": "1"}}
+for event in abot.graph.stream({"messages": messages}, thread):
+    for v in event.values():
+        print(v)
+#### Analizando Agent state (cuando interrupted)
+state = abot.graph.get_state(thread)
+for attr in dir(state):
+    if attr.startswith("_"):
+        continue
+    try:
+        print(f"Attr: {attr}")
+        print(state.__getattribute__(attr))
+        print('\n\n')
+    except:
+        print(f"couldn't print {attr}")
+        print('\n\n')
+        continue
+# Attr: config
+# {'configurable': {'thread_id': '1', 'thread_ts': '1f0b1c75-7f54-6abb-8001-9365c5b75911'}}
+
+
+
+# Attr: count
+# <built-in method count of StateSnapshot object at 0x7f7c34c2b640>
+
+
+
+# Attr: created_at
+# 2025-10-25T17:23:38.078672+00:00
+
+
+
+# Attr: index
+# <built-in method index of StateSnapshot object at 0x7f7c34c2b640>
+
+
+
+# Attr: metadata
+# {'source': 'loop', 'step': 1, 'writes': {'llm': {'messages': [AIMessage(content='', additional_kwargs={'tool_calls': [{'function': {'arguments': '{"query":"weather in San Francisco"}', 'name': 'tavily_search_results_json'}, 'id': 'call_i7rGhnzgZf5hW3bsDcqdTrH0', 'type': 'function'}]}, response_metadata={'finish_reason': 'tool_calls', 'logprobs': None, 'model_name': 'gpt-3.5-turbo', 'system_fingerprint': None, 'token_usage': {'completion_tokens': 22, 'completion_tokens_details': {'accepted_prediction_tokens': 0, 'audio_tokens': 0, 'reasoning_tokens': 0, 'rejected_prediction_tokens': 0}, 'prompt_tokens': 152, 'prompt_tokens_details': {'audio_tokens': 0, 'cached_tokens': 0}, 'total_tokens': 174}}, id='run-5e18196a-dd77-4477-a570-d9eb395ae520-0', tool_calls=[{'name': 'tavily_search_results_json', 'args': {'query': 'weather in San Francisco'}, 'id': 'call_i7rGhnzgZf5hW3bsDcqdTrH0'}])]}}}
+
+
+
+# Attr: next
+# ('action',)
+
+
+
+# Attr: parent_config
+# {'configurable': {'thread_id': '1', 'thread_ts': '1f0b1c75-7ef0-6eb2-8000-110d8286c564'}}
+
+
+
+# Attr: values
+# {'messages': [HumanMessage(content='Whats the weather in SF?', id='48b16d43-ecee-43e3-992d-3329cb7925f0'), AIMessage(content='', additional_kwargs={'tool_calls': [{'function': {'arguments': '{"query":"weather in San Francisco"}', 'name': 'tavily_search_results_json'}, 'id': 'call_i7rGhnzgZf5hW3bsDcqdTrH0', 'type': 'function'}]}, response_metadata={'finish_reason': 'tool_calls', 'logprobs': None, 'model_name': 'gpt-3.5-turbo', 'system_fingerprint': None, 'token_usage': {'completion_tokens': 22, 'completion_tokens_details': {'accepted_prediction_tokens': 0, 'audio_tokens': 0, 'reasoning_tokens': 0, 'rejected_prediction_tokens': 0}, 'prompt_tokens': 152, 'prompt_tokens_details': {'audio_tokens': 0, 'cached_tokens': 0}, 'total_tokens': 174}}, id='run-5e18196a-dd77-4477-a570-d9eb395ae520-0', tool_calls=[{'name': 'tavily_search_results_json', 'args': {'query': 'weather in San Francisco'}, 'id': 'call_i7rGhnzgZf5hW3bsDcqdTrH0'}])]}
+
+
+print(state.values.keys())
+    # output: dict_keys(['messages'])
+    # I.e., los keys son los items en AgentState
+#### Continuando despues the interrupt
+for event in abot.graph.stream(None, thread):
+    for v in event.values():
+        print(v)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+##### Implementacion HITL
+messages = [HumanMessage("Whats the weather in LA?")]
+thread = {"configurable": {"thread_id": "2"}}
+for event in abot.graph.stream({"messages": messages}, thread):
+    # Creates the INITIAL conversation stream
+    for v in event.values():
+        print(v)    
+        print('\n\n\n')
+while abot.graph.get_state(thread).next:
+    # Only continues while ".get_state.next" is NOT empty
+        # Non empty when there's a node to go after an interrupt
+        # Empty once agent reaches "__end__" state
+    print("\n", abot.graph.get_state(thread),"\n")
+    _input = input("proceed?")
+    if _input != "y":
+        print("aborting")
+        break
+    for event in abot.graph.stream(None, thread):
+        for v in event.values():
+            print(v)
+            print('\n\n\n')
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+##### Modifiando agent state
+#### Investigando current state 
+current_values = abot.graph.get_state(thread)
+print(current_values.values['messages'][-1])
+    #output:
+    # AIMessage(content='', additional_kwargs={'tool_calls': [{'function': {'arguments': '{"query":"weather in Los Angeles"}', 'name': 'tavily_search_results_json'}, 'id': 'call_6ED1ZQ8nrjYIOY14yqInLPZc', 'type': 'function'}]}, response_metadata={'finish_reason': 'tool_calls', 'logprobs': None, 'model_name': 'gpt-3.5-turbo', 'system_fingerprint': None, 'token_usage': {'completion_tokens': 22, 'completion_tokens_details': {'accepted_prediction_tokens': 0, 'audio_tokens': 0, 'reasoning_tokens': 0, 'rejected_prediction_tokens': 0}, 'prompt_tokens': 152, 'prompt_tokens_details': {'audio_tokens': 0, 'cached_tokens': 0}, 'total_tokens': 174}}, id='run-b68d1c1b-a0c6-4cb4-a8ce-1cc6aa8387a9-0', tool_calls=[{'name': 'tavily_search_results_json', 'args': {'query': 'weather in Los Angeles'}, 'id': 'call_6ED1ZQ8nrjYIOY14yqInLPZc'}])
+    # The following is important to note from the output:
+        # "AIMessage.additionalkwargs['tool_calls'][0]['function']
+                # ['name']" = 'tavily_search_results_json'
+            #I.e., this is the tool LLM decided to use
+            # It also includes LLM's decided inputs for that tool
+print(current_values.values['messages'][-1].tool_calls)
+    #output:
+    # [{'name': 'tavily_search_results_json',
+            #   'args': {'query': 'weather in Los Angeles'},
+            #   'id': 'call_6ED1ZQ8nrjYIOY14yqInLPZc'}]
+    # Helpful in analyzing the specific tool call
+#### Proponiendo modificaciones
+_id = current_values.values['messages'][-1].tool_calls[0]['id']
+
+## Chaning the query but keeping everyrthing else the same
+current_values.values['messages'][-1].tool_calls = [
+    {'name': 'tavily_search_results_json',
+  'args': {'query': 'current weather in Louisiana'},
+  'id': _id}
+]
+
+#### Updating state
+abot.graph.update_state(thread, current_values.values)
+
+#### Running agent from the updated state
+for event in abot.graph.stream(None, thread):
+    for v in event.values():
+        print(v)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+##### Time travel modificacion
+#### Getting entire snapshot history
+states = []
+for state in abot.graph.get_state_history(thread):
+    # Starts from most recent, going to most oldest
+    print(state)
+    print('\n\n--\n\n')
+    states.append(state)
+#Output:
+# StateSnapshot(values={'messages': [HumanMessage(content='Whats the weather in LA?', id='9e477a83-adba-4ee5-912d-d378993ace7e'), AIMessage(content='', additional_kwargs={'tool_calls': [{'function': {'arguments': '{"query":"weather in Los Angeles"}', 'name': 'tavily_search_results_json'}, 'id': 'call_6ED1ZQ8nrjYIOY14yqInLPZc', 'type': 'function'}]}, response_metadata={'finish_reason': 'tool_calls', 'logprobs': None, 'model_name': 'gpt-3.5-turbo', 'system_fingerprint': None, 'token_usage': {'completion_tokens': 22, 'completion_tokens_details': {'accepted_prediction_tokens': 0, 'audio_tokens': 0, 'reasoning_tokens': 0, 'rejected_prediction_tokens': 0}, 'prompt_tokens': 152, 'prompt_tokens_details': {'audio_tokens': 0, 'cached_tokens': 0}, 'total_tokens': 174}}, id='run-b68d1c1b-a0c6-4cb4-a8ce-1cc6aa8387a9-0', tool_calls=[{'name': 'tavily_search_results_json', 'args': {'query': 'current weather in Louisiana'}, 'id': 'call_6ED1ZQ8nrjYIOY14yqInLPZc'}]), ToolMessage(content='[{\'url\': \'https://www.weather25.com/north-america/usa/louisiana?page=month&month=October\', \'content\': \'weather25.com\\nSearch\\nweather in United States\\nRemove from your favorite locations\\nAdd to my locations\\nShare\\nweather in United States\\n\\n# Louisiana weather in October 2025\\n\\nPatchy rain possible\\nModerate or heavy rain with thunder\\nCloudy\\nPartly cloudy\\nClear\\nClear\\nClear\\nClear\\nClear\\nClear\\nClear\\nClear\\nClear\\nClear\\n\\n## The average weather in Louisiana in October\\n\\nThe weather in Louisiana in October is hot. The average temperatures are between 20°C and 27°C. [...] | 26 Moderate or heavy rain with thunder 27° /21° | 27 Cloudy 27° /21° | 28 Partly cloudy 24° /18° | 29 Sunny 21° /15° | 30 Sunny 18° /11° | 31 Sunny 19° /11° |  | [...] You can expect about 3 to 8 days of rain in Louisiana during the month of October. It’s a good idea to bring along your umbrella so that you don’t get caught in poor weather.\\n\\nOur weather forecast can give you a great sense of what weather to expect in Louisiana in October 2025.\\n\\nIf you’re planning to visit Louisiana in the near future, we highly recommend that you review the 14 day weather forecast for Louisiana before you arrive.\\n\\nTemperatures\\nRainy Days\\nSnowy Days\\nDry Days\\nRainfall\\n11.3\'}, {\'url\': \'https://www.accuweather.com/en/us/new-orleans/70112/october-weather/348585\', \'content\': "# New Orleans, LA\\n\\nNew Orleans\\n\\nLouisiana\\n\\n## Around the Globe\\n\\nAround the Globe\\n\\n### Hurricane Tracker\\n\\n### Severe Weather\\n\\n### Radar & Maps\\n\\n### News & Features\\n\\n### Astronomy\\n\\n### Business\\n\\n### Climate\\n\\n### Health\\n\\n### Recreation\\n\\n### Sports\\n\\n### Travel\\n\\n### Warnings\\n\\n### Data Suite\\n\\n### Forensics\\n\\n### Advertising\\n\\n### Superior Accuracy™\\n\\n### Video\\n\\n### Winter Center\\n\\n## Monthly\\n\\n## October\\n\\n## 2025\\n\\n## Daily\\n\\n## Temperature Graph\\n\\n## Further Ahead\\n\\nFurther Ahead\\n\\n### November 2025 [...] ### December 2025\\n\\n### January 2026\\n\\n## Around the Globe\\n\\nAround the Globe\\n\\n### Hurricane Tracker\\n\\n### Severe Weather\\n\\n### Radar & Maps\\n\\n### News\\n\\n### Video\\n\\n### Winter Center\\n\\nTop Stories\\n\\nHurricane\\n\\nMelissa may reach Category 5, poses great danger to Jamaica, Cuba, Hai...\\n\\n52 minutes ago\\n\\nWeather Forecasts\\n\\nWeather troubles brewing for some trick-or-treaters through Halloween\\n\\n4 hours ago\\n\\nHurricane\\n\\nMelissa, future nor\'easter to team up along US East Coast next week\\n\\n1 hour ago\\n\\nHurricane [...] Coast Guard rescues family stranded on island off Cape Cod\\n\\n2 days ago\\n\\nWeather News\\n\\nPolar bears take over abandoned island in Russia\\n\\n5 days ago\\n\\n## Weather Near New Orleans:\\n\\n...\\n\\n...\\n\\n..."}]', name='tavily_search_results_json', id='c87d40ee-76cb-42cc-8af2-34077e6201e1', tool_call_id='call_6ED1ZQ8nrjYIOY14yqInLPZc'), AIMessage(content="I found information about the weather in Louisiana. The average temperatures in Louisiana in October range between 20°C and 27°C. There may be patchy rain possible, moderate or heavy rain with thunder, cloudy, partly cloudy, and clear days throughout the month. It's advisable to bring an umbrella as there could be 3 to 8 days of rain in October.\n\nIf you were referring to Los Angeles (LA) in California, please let me know so I can provide you with the specific weather information for that location.", response_metadata={'finish_reason': 'stop', 'logprobs': None, 'model_name': 'gpt-3.5-turbo', 'system_fingerprint': None, 'token_usage': {'completion_tokens': 107, 'completion_tokens_details': {'accepted_prediction_tokens': 0, 'audio_tokens': 0, 'reasoning_tokens': 0, 'rejected_prediction_tokens': 0}, 'prompt_tokens': 903, 'prompt_tokens_details': {'audio_tokens': 0, 'cached_tokens': 0}, 'total_tokens': 1010}}, id='run-b7e3f01a-ec8d-4a0d-a081-947d9c789216-0')]}, next=(), config={'configurable': {'thread_id': '3', 'thread_ts': '1f0b1c76-05b6-615a-8004-3a780005737e'}}, metadata={'source': 'loop', 'step': 4, 'writes': {'llm': {'messages': [AIMessage(content="I found information about the weather in Louisiana. The average temperatures in Louisiana in October range between 20°C and 27°C. There may be patchy rain possible, moderate or heavy rain with thunder, cloudy, partly cloudy, and clear days throughout the month. It's advisable to bring an umbrella as there could be 3 to 8 days of rain in October.\n\nIf you were referring to Los Angeles (LA) in California, please let me know so I can provide you with the specific weather information for that location.", response_metadata={'finish_reason': 'stop', 'logprobs': None, 'model_name': 'gpt-3.5-turbo', 'system_fingerprint': None, 'token_usage': {'completion_tokens': 107, 'completion_tokens_details': {'accepted_prediction_tokens': 0, 'audio_tokens': 0, 'reasoning_tokens': 0, 'rejected_prediction_tokens': 0}, 'prompt_tokens': 903, 'prompt_tokens_details': {'audio_tokens': 0, 'cached_tokens': 0}, 'total_tokens': 1010}}, id='run-b7e3f01a-ec8d-4a0d-a081-947d9c789216-0')]}}}, created_at='2025-10-25T17:23:52.169466+00:00', parent_config={'configurable': {'thread_id': '3', 'thread_ts': '1f0b1c75-f918-6379-8003-47b5ea262549'}})
+
+
+# --
+
+
+# StateSnapshot(values={'messages': [HumanMessage(content='Whats the weather in LA?', id='9e477a83-adba-4ee5-912d-d378993ace7e'), AIMessage(content='', additional_kwargs={'tool_calls': [{'function': {'arguments': '{"query":"weather in Los Angeles"}', 'name': 'tavily_search_results_json'}, 'id': 'call_6ED1ZQ8nrjYIOY14yqInLPZc', 'type': 'function'}]}, response_metadata={'finish_reason': 'tool_calls', 'logprobs': None, 'model_name': 'gpt-3.5-turbo', 'system_fingerprint': None, 'token_usage': {'completion_tokens': 22, 'completion_tokens_details': {'accepted_prediction_tokens': 0, 'audio_tokens': 0, 'reasoning_tokens': 0, 'rejected_prediction_tokens': 0}, 'prompt_tokens': 152, 'prompt_tokens_details': {'audio_tokens': 0, 'cached_tokens': 0}, 'total_tokens': 174}}, id='run-b68d1c1b-a0c6-4cb4-a8ce-1cc6aa8387a9-0', tool_calls=[{'name': 'tavily_search_results_json', 'args': {'query': 'current weather in Louisiana'}, 'id': 'call_6ED1ZQ8nrjYIOY14yqInLPZc'}]), ToolMessage(content='[{\'url\': \'https://www.weather25.com/north-america/usa/louisiana?page=month&month=October\', \'content\': \'weather25.com\\nSearch\\nweather in United States\\nRemove from your favorite locations\\nAdd to my locations\\nShare\\nweather in United States\\n\\n# Louisiana weather in October 2025\\n\\nPatchy rain possible\\nModerate or heavy rain with thunder\\nCloudy\\nPartly cloudy\\nClear\\nClear\\nClear\\nClear\\nClear\\nClear\\nClear\\nClear\\nClear\\nClear\\n\\n## The average weather in Louisiana in October\\n\\nThe weather in Louisiana in October is hot. The average temperatures are between 20°C and 27°C. [...] | 26 Moderate or heavy rain with thunder 27° /21° | 27 Cloudy 27° /21° | 28 Partly cloudy 24° /18° | 29 Sunny 21° /15° | 30 Sunny 18° /11° | 31 Sunny 19° /11° |  | [...] You can expect about 3 to 8 days of rain in Louisiana during the month of October. It’s a good idea to bring along your umbrella so that you don’t get caught in poor weather.\\n\\nOur weather forecast can give you a great sense of what weather to expect in Louisiana in October 2025.\\n\\nIf you’re planning to visit Louisiana in the near future, we highly recommend that you review the 14 day weather forecast for Louisiana before you arrive.\\n\\nTemperatures\\nRainy Days\\nSnowy Days\\nDry Days\\nRainfall\\n11.3\'}, {\'url\': \'https://www.accuweather.com/en/us/new-orleans/70112/october-weather/348585\', \'content\': "# New Orleans, LA\\n\\nNew Orleans\\n\\nLouisiana\\n\\n## Around the Globe\\n\\nAround the Globe\\n\\n### Hurricane Tracker\\n\\n### Severe Weather\\n\\n### Radar & Maps\\n\\n### News & Features\\n\\n### Astronomy\\n\\n### Business\\n\\n### Climate\\n\\n### Health\\n\\n### Recreation\\n\\n### Sports\\n\\n### Travel\\n\\n### Warnings\\n\\n### Data Suite\\n\\n### Forensics\\n\\n### Advertising\\n\\n### Superior Accuracy™\\n\\n### Video\\n\\n### Winter Center\\n\\n## Monthly\\n\\n## October\\n\\n## 2025\\n\\n## Daily\\n\\n## Temperature Graph\\n\\n## Further Ahead\\n\\nFurther Ahead\\n\\n### November 2025 [...] ### December 2025\\n\\n### January 2026\\n\\n## Around the Globe\\n\\nAround the Globe\\n\\n### Hurricane Tracker\\n\\n### Severe Weather\\n\\n### Radar & Maps\\n\\n### News\\n\\n### Video\\n\\n### Winter Center\\n\\nTop Stories\\n\\nHurricane\\n\\nMelissa may reach Category 5, poses great danger to Jamaica, Cuba, Hai...\\n\\n52 minutes ago\\n\\nWeather Forecasts\\n\\nWeather troubles brewing for some trick-or-treaters through Halloween\\n\\n4 hours ago\\n\\nHurricane\\n\\nMelissa, future nor\'easter to team up along US East Coast next week\\n\\n1 hour ago\\n\\nHurricane [...] Coast Guard rescues family stranded on island off Cape Cod\\n\\n2 days ago\\n\\nWeather News\\n\\nPolar bears take over abandoned island in Russia\\n\\n5 days ago\\n\\n## Weather Near New Orleans:\\n\\n...\\n\\n...\\n\\n..."}]', name='tavily_search_results_json', id='c87d40ee-76cb-42cc-8af2-34077e6201e1', tool_call_id='call_6ED1ZQ8nrjYIOY14yqInLPZc')]}, next=('llm',), config={'configurable': {'thread_id': '3', 'thread_ts': '1f0b1c75-f918-6379-8003-47b5ea262549'}}, metadata={'source': 'loop', 'step': 3, 'writes': {'action': {'messages': [ToolMessage(content='[{\'url\': \'https://www.weather25.com/north-america/usa/louisiana?page=month&month=October\', \'content\': \'weather25.com\\nSearch\\nweather in United States\\nRemove from your favorite locations\\nAdd to my locations\\nShare\\nweather in United States\\n\\n# Louisiana weather in October 2025\\n\\nPatchy rain possible\\nModerate or heavy rain with thunder\\nCloudy\\nPartly cloudy\\nClear\\nClear\\nClear\\nClear\\nClear\\nClear\\nClear\\nClear\\nClear\\nClear\\n\\n## The average weather in Louisiana in October\\n\\nThe weather in Louisiana in October is hot. The average temperatures are between 20°C and 27°C. [...] | 26 Moderate or heavy rain with thunder 27° /21° | 27 Cloudy 27° /21° | 28 Partly cloudy 24° /18° | 29 Sunny 21° /15° | 30 Sunny 18° /11° | 31 Sunny 19° /11° |  | [...] You can expect about 3 to 8 days of rain in Louisiana during the month of October. It’s a good idea to bring along your umbrella so that you don’t get caught in poor weather.\\n\\nOur weather forecast can give you a great sense of what weather to expect in Louisiana in October 2025.\\n\\nIf you’re planning to visit Louisiana in the near future, we highly recommend that you review the 14 day weather forecast for Louisiana before you arrive.\\n\\nTemperatures\\nRainy Days\\nSnowy Days\\nDry Days\\nRainfall\\n11.3\'}, {\'url\': \'https://www.accuweather.com/en/us/new-orleans/70112/october-weather/348585\', \'content\': "# New Orleans, LA\\n\\nNew Orleans\\n\\nLouisiana\\n\\n## Around the Globe\\n\\nAround the Globe\\n\\n### Hurricane Tracker\\n\\n### Severe Weather\\n\\n### Radar & Maps\\n\\n### News & Features\\n\\n### Astronomy\\n\\n### Business\\n\\n### Climate\\n\\n### Health\\n\\n### Recreation\\n\\n### Sports\\n\\n### Travel\\n\\n### Warnings\\n\\n### Data Suite\\n\\n### Forensics\\n\\n### Advertising\\n\\n### Superior Accuracy™\\n\\n### Video\\n\\n### Winter Center\\n\\n## Monthly\\n\\n## October\\n\\n## 2025\\n\\n## Daily\\n\\n## Temperature Graph\\n\\n## Further Ahead\\n\\nFurther Ahead\\n\\n### November 2025 [...] ### December 2025\\n\\n### January 2026\\n\\n## Around the Globe\\n\\nAround the Globe\\n\\n### Hurricane Tracker\\n\\n### Severe Weather\\n\\n### Radar & Maps\\n\\n### News\\n\\n### Video\\n\\n### Winter Center\\n\\nTop Stories\\n\\nHurricane\\n\\nMelissa may reach Category 5, poses great danger to Jamaica, Cuba, Hai...\\n\\n52 minutes ago\\n\\nWeather Forecasts\\n\\nWeather troubles brewing for some trick-or-treaters through Halloween\\n\\n4 hours ago\\n\\nHurricane\\n\\nMelissa, future nor\'easter to team up along US East Coast next week\\n\\n1 hour ago\\n\\nHurricane [...] Coast Guard rescues family stranded on island off Cape Cod\\n\\n2 days ago\\n\\nWeather News\\n\\nPolar bears take over abandoned island in Russia\\n\\n5 days ago\\n\\n## Weather Near New Orleans:\\n\\n...\\n\\n...\\n\\n..."}]', name='tavily_search_results_json', id='c87d40ee-76cb-42cc-8af2-34077e6201e1', tool_call_id='call_6ED1ZQ8nrjYIOY14yqInLPZc')]}}}, created_at='2025-10-25T17:23:50.846518+00:00', parent_config={'configurable': {'thread_id': '3', 'thread_ts': '1f0b1c75-d528-6860-8002-1a0422a4eee9'}})
+
+
+# --
+
+
+# StateSnapshot(values={'messages': [HumanMessage(content='Whats the weather in LA?', id='9e477a83-adba-4ee5-912d-d378993ace7e'), AIMessage(content='', additional_kwargs={'tool_calls': [{'function': {'arguments': '{"query":"weather in Los Angeles"}', 'name': 'tavily_search_results_json'}, 'id': 'call_6ED1ZQ8nrjYIOY14yqInLPZc', 'type': 'function'}]}, response_metadata={'finish_reason': 'tool_calls', 'logprobs': None, 'model_name': 'gpt-3.5-turbo', 'system_fingerprint': None, 'token_usage': {'completion_tokens': 22, 'completion_tokens_details': {'accepted_prediction_tokens': 0, 'audio_tokens': 0, 'reasoning_tokens': 0, 'rejected_prediction_tokens': 0}, 'prompt_tokens': 152, 'prompt_tokens_details': {'audio_tokens': 0, 'cached_tokens': 0}, 'total_tokens': 174}}, id='run-b68d1c1b-a0c6-4cb4-a8ce-1cc6aa8387a9-0', tool_calls=[{'name': 'tavily_search_results_json', 'args': {'query': 'current weather in Louisiana'}, 'id': 'call_6ED1ZQ8nrjYIOY14yqInLPZc'}])]}, next=('action',), config={'configurable': {'thread_id': '3', 'thread_ts': '1f0b1c75-d528-6860-8002-1a0422a4eee9'}}, metadata={'source': 'update', 'step': 2, 'writes': {'llm': {'messages': [HumanMessage(content='Whats the weather in LA?', id='9e477a83-adba-4ee5-912d-d378993ace7e'), AIMessage(content='', additional_kwargs={'tool_calls': [{'function': {'arguments': '{"query":"weather in Los Angeles"}', 'name': 'tavily_search_results_json'}, 'id': 'call_6ED1ZQ8nrjYIOY14yqInLPZc', 'type': 'function'}]}, response_metadata={'finish_reason': 'tool_calls', 'logprobs': None, 'model_name': 'gpt-3.5-turbo', 'system_fingerprint': None, 'token_usage': {'completion_tokens': 22, 'completion_tokens_details': {'accepted_prediction_tokens': 0, 'audio_tokens': 0, 'reasoning_tokens': 0, 'rejected_prediction_tokens': 0}, 'prompt_tokens': 152, 'prompt_tokens_details': {'audio_tokens': 0, 'cached_tokens': 0}, 'total_tokens': 174}}, id='run-b68d1c1b-a0c6-4cb4-a8ce-1cc6aa8387a9-0', tool_calls=[{'name': 'tavily_search_results_json', 'args': {'query': 'current weather in Louisiana'}, 'id': 'call_6ED1ZQ8nrjYIOY14yqInLPZc'}])]}}}, created_at='2025-10-25T17:23:47.078350+00:00', parent_config={'configurable': {'thread_id': '3', 'thread_ts': '1f0b1c75-d4c4-657b-8001-715a6488eca1'}})
+
+
+# --
+
+
+# StateSnapshot(values={'messages': [HumanMessage(content='Whats the weather in LA?', id='9e477a83-adba-4ee5-912d-d378993ace7e'), AIMessage(content='', additional_kwargs={'tool_calls': [{'function': {'arguments': '{"query":"weather in Los Angeles"}', 'name': 'tavily_search_results_json'}, 'id': 'call_6ED1ZQ8nrjYIOY14yqInLPZc', 'type': 'function'}]}, response_metadata={'finish_reason': 'tool_calls', 'logprobs': None, 'model_name': 'gpt-3.5-turbo', 'system_fingerprint': None, 'token_usage': {'completion_tokens': 22, 'completion_tokens_details': {'accepted_prediction_tokens': 0, 'audio_tokens': 0, 'reasoning_tokens': 0, 'rejected_prediction_tokens': 0}, 'prompt_tokens': 152, 'prompt_tokens_details': {'audio_tokens': 0, 'cached_tokens': 0}, 'total_tokens': 174}}, id='run-b68d1c1b-a0c6-4cb4-a8ce-1cc6aa8387a9-0', tool_calls=[{'name': 'tavily_search_results_json', 'args': {'query': 'weather in Los Angeles'}, 'id': 'call_6ED1ZQ8nrjYIOY14yqInLPZc'}])]}, next=('action',), config={'configurable': {'thread_id': '3', 'thread_ts': '1f0b1c75-d4c4-657b-8001-715a6488eca1'}}, metadata={'source': 'loop', 'step': 1, 'writes': {'llm': {'messages': [AIMessage(content='', additional_kwargs={'tool_calls': [{'function': {'arguments': '{"query":"weather in Los Angeles"}', 'name': 'tavily_search_results_json'}, 'id': 'call_6ED1ZQ8nrjYIOY14yqInLPZc', 'type': 'function'}]}, response_metadata={'finish_reason': 'tool_calls', 'logprobs': None, 'model_name': 'gpt-3.5-turbo', 'system_fingerprint': None, 'token_usage': {'completion_tokens': 22, 'completion_tokens_details': {'accepted_prediction_tokens': 0, 'audio_tokens': 0, 'reasoning_tokens': 0, 'rejected_prediction_tokens': 0}, 'prompt_tokens': 152, 'prompt_tokens_details': {'audio_tokens': 0, 'cached_tokens': 0}, 'total_tokens': 174}}, id='run-b68d1c1b-a0c6-4cb4-a8ce-1cc6aa8387a9-0', tool_calls=[{'name': 'tavily_search_results_json', 'args': {'query': 'weather in Los Angeles'}, 'id': 'call_6ED1ZQ8nrjYIOY14yqInLPZc'}])]}}}, created_at='2025-10-25T17:23:47.037306+00:00', parent_config={'configurable': {'thread_id': '3', 'thread_ts': '1f0b1c75-d490-6189-8000-48ad306e2ded'}})
+
+
+# --
+
+
+# StateSnapshot(values={'messages': [HumanMessage(content='Whats the weather in LA?', id='9e477a83-adba-4ee5-912d-d378993ace7e')]}, next=('llm',), config={'configurable': {'thread_id': '3', 'thread_ts': '1f0b1c75-d490-6189-8000-48ad306e2ded'}}, metadata={'source': 'loop', 'step': 0, 'writes': None}, created_at='2025-10-25T17:23:47.015907+00:00', parent_config={'configurable': {'thread_id': '3', 'thread_ts': '1f0b1c75-d48d-6cb6-bfff-62a64672aab3'}})
+
+
+# --
+
+
+# StateSnapshot(values={'messages': []}, next=('__start__',), config={'configurable': {'thread_id': '3', 'thread_ts': '1f0b1c75-d48d-6cb6-bfff-62a64672aab3'}}, metadata={'source': 'input', 'step': -1, 'writes': {'messages': [HumanMessage(content='Whats the weather in LA?')]}}, created_at='2025-10-25T17:23:47.014968+00:00', parent_config=None)
+
+
+# --
+
+#### Choosing a specific snapshot to replay
+to_replay = states[-3]
+for event in abot.graph.stream(None, to_replay.config):
+    for k, v in event.items():
+        print(v)
+#### Modifiying the specific snapshot
+_id = to_replay.values['messages'][-1].tool_calls[0]['id']
+to_replay.values['messages'][-1].tool_calls = [{'name': 'tavily_search_results_json',
+  'args': {'query': 'current weather in LA, accuweather'},
+  'id': _id}]
+#### Store the updated state in a specific "branch_state" variable
+branch_state = abot.graph.update_state(to_replay.config, to_replay.values)
+print(branch_state)
+    #output:
+    # {'messages': [HumanMessage(content='Whats the weather in LA?', id='9e477a83-adba-4ee5-912d-d378993ace7e'), AIMessage(content='', additional_kwargs={'tool_calls': [{'function': {'arguments': '{"query":"weather in Los Angeles"}', 'name': 'tavily_search_results_json'}, 'id': 'call_6ED1ZQ8nrjYIOY14yqInLPZc', 'type': 'function'}]}, response_metadata={'finish_reason': 'tool_calls', 'logprobs': None, 'model_name': 'gpt-3.5-turbo', 'system_fingerprint': None, 'token_usage': {'completion_tokens': 22, 'completion_tokens_details': {'accepted_prediction_tokens': 0, 'audio_tokens': 0, 'reasoning_tokens': 0, 'rejected_prediction_tokens': 0}, 'prompt_tokens': 152, 'prompt_tokens_details': {'audio_tokens': 0, 'cached_tokens': 0}, 'total_tokens': 174}}, id='run-b68d1c1b-a0c6-4cb4-a8ce-1cc6aa8387a9-0', tool_calls=[{'name': 'tavily_search_results_json', 'args': {'query': 'current weather in LA, accuweather'}, 'id': 'call_6ED1ZQ8nrjYIOY14yqInLPZc'}])]}
+#### Continue execution from modified state
+for event in abot.graph.stream(None, branch_state):
+    for k, v in event.items():
+        if k != "__end__":
+            print(v)
+
+
+
+
+
+
+
+
+
+
+
+
+
+##### Debugging LLMs
+    # A new random msg can be appended by making sure that it's 
+            #"msg.id" is NOT found in the "Message" snapshot list
+        # For more info, see "reduce_message" custom fcn
+#### Case details for creating a mock LLM response
+    # we'll use "to_replay" snapshot, which does NOT contain the 
+            # execution of the tool
+        # Only contains the initial query and LLM's tool decision
+    # We'll continue with the user query "waether in LA?"
+    # The PREDICTED agent path for this initial query is as follows:
+        # Create "HumanMessage" for the initial user query
+        # "AIMessage" will be LLM's interpretation of query as well
+                # as the tools (and inputs) LLM has decided
+        # "ToolMessage" will be chosen tool's execution with the 
+                # inputs that were decided by the LLM itself
+        # "AIMessage" is the final LLM response to user query using
+                # the results from the tool's execution
+    # NOte: "to_replay" does not have "ToolMessage" bc tool not executed
+    # Thus we'll pretend was executed by adding a "ToolMessage" with
+            #a randomly absurd temperature for LA weather
+        # Something like LA weather is currently 54 degrees celsius
+    # We'll investigate how the LLM responds to this mocked info
+            #that mocks the results that would be given from the
+            # chosen tools' execution
+        # Note, we WON'T be changing the LLM's chosen tool or it's inputs
+        # We'll only change the "content" (i.e., response) of the tool
+#### Select the specific tool that chosen by the LLM
+_id = to_replay.values['messages'][-1].tool_calls[0]['id']
+#### Creating the fake "ToolMessage"
+    #This will suppose that tool replied with an absurd temperature
+state_update = {"messages": [ToolMessage(
+    tool_call_id=_id,
+    name="tavily_search_results_json",
+    content="54 degree celcius",
+)]}
+### Ipdate "to_replay" with fake "ToolMessage"
+branch_and_add = abot.graph.update_state(
+    to_replay.config, 
+    state_update, 
+    as_node="action")
+    # IMPORTANTE
+    # "as_node" = you put what node it's faking to execute
+        # This will decide what would be placed in "snapshot.next"
+#### continute graph execution using the updated state snapshot
+for event in abot.graph.stream(None, branch_and_add):
+    for k, v in event.items():
+        print(v)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+##########################################################################################
+##########################################################################################
+    # State Snapshot Memory Agent #
+from dotenv import load_dotenv
+
+_ = load_dotenv()
+from langgraph.graph import StateGraph, END
+from typing import TypedDict, Annotated
+import operator
+from langgraph.checkpoint.sqlite import SqliteSaver
+
+
+
+
+##### Planilla para custom agente
+#### Agent State
+class AgentState(TypedDict):
+    lnode: str
+        # last node
+    scratch: str
+        # scratchpad location
+        # where agent will input info as is needed
+    count: Annotated[int, operator.add]
+        # counter that increases after each step
+#### Define node fcnalities and conditionals
+def node1(state: AgentState):
+    print(f"node1, count:{state['count']}")
+        #Note: since the print is before the return:
+            # The count will be the old count
+            # It's once return is reached that the counter will increase
+                # This will show up in snapshot but not in the print
+    return {"lnode": "node_1",
+            "count": 1,
+           }
+def node2(state: AgentState):
+    print(f"node2, count:{state['count']}")
+    return {"lnode": "node_2",
+            "count": 1,
+           }
+
+def should_continue(state):
+    return state["count"] < 3
+#### Create agent graph
+builder = StateGraph(AgentState)
+builder.add_node("Node1", node1)
+builder.add_node("Node2", node2)
+
+builder.add_edge("Node1", "Node2")
+builder.add_conditional_edges("Node2", 
+                              should_continue, 
+                              {True: "Node1", False: END})
+builder.set_entry_point("Node1")
+    #GRaph pseudo diagram:
+        # __start__ -> N1 (count 0) -> N2 (count 1) -> 
+                # N1 (count 2) -> N2 (count 3) -> END
+    # Note, the conditional is only on node 2
+#### SEtup in memory persistence and initialize agent
+memory = SqliteSaver.from_conn_string(":memory:")
+graph = builder.compile(checkpointer=memory)
+
+
+
+
+
+
+
+
+
+
+
+
+
+##### Explorando state de custom agente
+#### Init convo with agent
+thread = {"configurable": {"thread_id": str(1)}}
+graph.invoke({"count":0, "scratch":"hi"},thread)
+    #Output:    #Occurs bc of the prints inside node fcnality
+        # node1, count:0
+        # node2, count:1
+        # node1, count:2
+        # node2, count:3
+
+        # {'lnode': 'node_2', 'scratch': 'hi', 'count': 4}
+    # The last {} is actually the state snapshot after invoke is done
+        #This is printed by default on every "graph.invoke"
+    # We can see that the last count (3) != snapshot count
+        # This confirms that node fcnality logic happens before
+                # the state gets updated
+#### EXploring current state snapshot
+state = graph.get_state(thread)
+print(state)
+    # output:   #Will show latest snapshot
+    # StateSnapshot(values={'lnode': 'node_2', 'scratch': 'hi', 'count': 4}, next=(), config={'configurable': {'thread_id': '1', 'thread_ts': '1f0b1c76-3bdb-680e-8004-86f40af7cc6b'}}, metadata={'source': 'loop', 'step': 4, 'writes': {'Node2': {'count': 1, 'lnode': 'node_2'}}}, created_at='2025-10-25T17:23:57.847127+00:00', parent_config={'configurable': {'thread_id': '1', 'thread_ts': '1f0b1c76-3bd8-64a8-8003-5c9a172ac4dc'}})
+#### Explorando attributos
+for attr in dir(state):
+    if attr.startswith("_"):
+        continue
+    try:
+        print(f"Attr: {attr}")
+        print(state.__getattribute__(attr))
+        print('\n\n')
+    except:
+        print(f"couldn't print {attr}")
+        print('\n\n')
+        continue
+#### Explorando snapshot historia
+states = []
+for state in graph.get_state_history(thread):
+    print(state, "\n")
+    states.append(state.config)
+    print(state.config, state.values['count'])
+    print('\n\n\n')
+
+
+
+
+
+
+
+
+
+##### Time travel con custom agente
+#### Choose a specific "StateSnapshot" given a specific "configurable"
+state = graph.get_state(states[-3])
+### Continue graph execution from the chosen snapshot
+graph.invoke(None, states[-3])
+
+
+
+
+
+
+
+
+
+##### Explorando historia post-time travel
+thread = {"configurable": {"thread_id": str(1)}}
+for state in graph.get_state_history(thread):
+    print(state.config, state.values['count'])
+    print('\n\n\n')
+
+
+
+
+
+
+
+
+
+
+
+
+##### Exploring snapshot's parent-child realtion after time travel:
+for state in graph.get_state_history(thread):
+    print((f"""
+        {state.config['configurable']['thread_ts']},
+        {state.paren_config['configurable']['thread_ts']},
+        {state.values['count']}
+    """))
+    print('\n')
+    #Output:    
+            #('a356', '53d4', 4)
+            #('53d4', '2720', 3)
+            #('2720', '102b', 2) #Note '102b' parent
+            #('53df', '4a2e', 4)
+            #('4a2e', 'ac4f', 3)
+            #('ac4f', '102b', 2) #Note '102b' parent
+            #('102b', '9055', 1)
+            #('9055', 'b349', 0)
+            #('b349', None, 0)
+                #Recall, this is state[-1]
+                    #I.e., state BEFORE "__start__" node
+                    #Thus it won't have parent node
+    #Note, these are fake values to match book
+        #I.e., these numbers WONT match the numbers found above
+
+
+
+
+
+
+
+
+
+#### Visualize the graph
+from IPython.display import Image
+Image(graph.get_graph().draw_png())
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+##### Modify a prev state to use in new thread
+#### Start with a fresh thread to clear history
+thread2 = {"configurable": {"thread_id": str(2)}}
+graph.invoke({"count":0, "scratch":"hi"},thread2)
+#### Get state history, store it, and anlyze it
+states2 = []
+for state in graph.get_state_history(thread2):
+    states2.append(state.config)
+    print(state.config, state.values['count']) 
+    print('\n\n\n') 
+#### Select an old state to work with
+save_state = graph.get_state(states2[-3])
+    # REcall: 'states2[-3]' = snapshot after "node1" but b4 "node2"
+state = save_state
+print(state)
+#### Modify the chosen state above
+save_state.values["count"] = -3
+save_state.values["scratch"] = "hello"
+state = save_state
+print(state)
+#### Actually use "update_state"
+graph.update_state(thread2,save_state.values)
+#### Exploring state history after "update_state" step is done
+for i, state in enumerate(graph.get_state_history(thread2)):
+    print(state, '\n')
+    print('\n\n\n')  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+##### Exploring ".update_state.as_node" param.
+#### Create modofications to a chosen snapshot
+    #this will simply reuse "save_state" from line 2527
+save_state.values["count"] = -3
+save_state.values["scratch"] = "hello"
+state = save_state
+print(state)
+#### Apply "update_state" with ".as_node" param
+graph.update_state(thread2,save_state.values, as_node="Node1")
+#### Exploring state hsitory after "update_state.as_node"
+for i, state in enumerate(graph.get_state_history(thread2)):
+    if i >= 3:  #print latest 3
+        break
+    print(state, '\n')
+    print('\n\n\n') 
+#### Invoking on the latest/current state (post-modification)
+graph.invoke(None,thread2)
+#### Explore state history post invocation
+for state in graph.get_state_history(thread2):
+    print(state,"\n")
+    print('\n\n\n')  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+##########################################################################################
+##########################################################################################
+    # Essay Writer #
+#### Import libraries and setup environment
+from dotenv import load_dotenv
+
+_ = load_dotenv()
+from langgraph.graph import StateGraph, END
+from typing import TypedDict, Annotated, List
+import operator
+from langgraph.checkpoint.sqlite import SqliteSaver
+from langchain_core.messages import AnyMessage, SystemMessage, HumanMessage, AIMessage, ChatMessage
+
+memory = SqliteSaver.from_conn_string(":memory:")
+
+#### Create agent state
+class AgentState(TypedDict):
+    task: str
+        # What we're trying to write an essay about
+        # This is where the HUMAN INPUT goes into
+    plan: str
+        # Keeps track of the plan that "planner" node wil generate
+    draft: str
+        # Draft of the essay
+    critique: str
+        # Will be populated by the "reflect" node
+    content: List[str]
+        # Keeps track of list of docs retrieved by search-tool
+    revision_number: int
+        # Number of revisions made so far
+    max_revisions: int
+        # Max revisions that we want to make
+
+#### Init model and create prompts
+from langchain_openai import ChatOpenAI
+model = ChatOpenAI(model="gpt-3.5-turbo", temperature=0)
+
+PLAN_PROMPT = """You are an expert writer tasked with writing a high level outline of an essay. \
+Write such an outline for the user provided topic. Give an outline of the essay along with any relevant notes \
+or instructions for the sections."""
+
+WRITER_PROMPT = """You are an essay assistant tasked with writing excellent 5-paragraph essays.\
+Generate the best essay possible for the user's request and the initial outline. \
+If the user provides critique, respond with a revised version of your previous attempts. \
+Utilize all the information below as needed: 
+
+------
+
+{content}"""
+
+REFLECTION_PROMPT = """You are a teacher grading an essay submission. \
+Generate critique and recommendations for the user's submission. \
+Provide detailed recommendations, including requests for length, depth, style, etc."""
+
+RESEARCH_PLAN_PROMPT = """You are a researcher charged with providing information that can \
+be used when writing the following essay. Generate a list of search queries that will gather \
+any relevant information. Only generate 3 queries max."""
+
+RESEARCH_CRITIQUE_PROMPT = """You are a researcher charged with providing information that can \
+be used when making any requested revisions (as outlined below). \
+Generate a list of search queries that will gather any relevant information. Only generate 3 queries max."""
+
+#### Create pydantic model and search tool
+    # Ensures that the queries are a LIST of strings
+        # These queries will be passed to the search-tool
+from langchain_core.pydantic_v1 import BaseModel
+from tavily import TavilyClient
+import os
+
+class Queries(BaseModel):  
+    #Pydantic model
+    queries: List[str]
+
+tavily = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
+
+#### Setting up ALL nodes' fcnalities and conditional edge logic
+def plan_node(state: AgentState):
+    # Creates a plan for how to write essay
+    messages = [
+        SystemMessage(content=PLAN_PROMPT), 
+        HumanMessage(content=state['task'])
+    ]
+    response = model.invoke(messages)
+        # Returns plan generated by LLM
+    return {"plan": response.content}
+
+def research_plan_node(state: AgentState):
+    # Generates search queries and the search results (of those queries)
+    queries = model.with_structured_output(Queries).invoke([
+        SystemMessage(content=RESEARCH_PLAN_PROMPT),
+        HumanMessage(content=state['task'])
+    ])
+        # GEnerates search queries
+    content = state['content'] or []
+        # Fetches "content" attr, which will store the search results
+    for q in queries.queries:
+        response = tavily.search(query=q, max_results=2)
+            #Performs search result
+        for r in response['results']:
+            content.append(r['content'])
+    return {"content": content}
+
+def generation_node(state: AgentState):
+    # Writes the essay draft
+    content = "\n\n".join(state['content'] or [])
+        # Turns "content" search result into a SINGLE STRING
+    user_message = HumanMessage(
+        content=f"{state['task']}\n\nHere is my plan:\n\n{state['plan']}")
+    messages = [
+        SystemMessage(
+            content=WRITER_PROMPT.format(content=content)
+        ),
+        user_message
+        ]
+    response = model.invoke(messages)
+        # returns essay generated by LLM
+    return {
+        "draft": response.content, 
+        "revision_number": state.get("revision_number", 1) + 1
+    }
+
+def reflection_node(state: AgentState):
+    # Creates essay critique
+    messages = [
+        SystemMessage(content=REFLECTION_PROMPT), 
+        HumanMessage(content=state['draft'])
+    ]
+    response = model.invoke(messages)
+        # returns critique generated by LLM
+    return {"critique": response.content}
+
+def research_critique_node(state: AgentState):
+    # GEnerates NEW RESEARCH based on critique
+    queries = model.with_structured_output(Queries).invoke([
+        SystemMessage(content=RESEARCH_CRITIQUE_PROMPT),
+        HumanMessage(content=state['critique'])
+    ])
+    content = state['content'] or []
+    for q in queries.queries:
+        response = tavily.search(query=q, max_results=2)
+        for r in response['results']:
+            content.append(r['content'])
+                # appends new research to prev. existing research
+    return {"content": content}
+
+def should_continue(state):
+    if state["revision_number"] > state["max_revisions"]:
+        return END
+    return "reflect"
+
+#### Creating agent graph and initialize it
+builder = StateGraph(AgentState)
+
+builder.add_node("planner", plan_node)
+builder.add_node("generate", generation_node)
+builder.add_node("reflect", reflection_node)
+builder.add_node("research_plan", research_plan_node)
+builder.add_node("research_critique", research_critique_node)
+
+builder.set_entry_point("planner")
+
+builder.add_conditional_edges(
+    "generate", 
+    should_continue, 
+    {END: END, "reflect": "reflect"}
+)
+
+builder.add_edge("planner", "research_plan")
+builder.add_edge("research_plan", "generate")
+
+builder.add_edge("reflect", "research_critique")
+builder.add_edge("research_critique", "generate")
+
+graph = builder.compile(checkpointer=memory)
+
+#### Visualize the graph
+from IPython.display import Image
+
+Image(graph.get_graph().draw_png())
+
+#### Start conversation and stream "Message" results
+thread = {"configurable": {"thread_id": "1"}}
+for s in graph.stream({
+    'task': "what is the difference between langchain and langsmith",
+    "max_revisions": 2,
+    "revision_number": 1,
+}, thread):
+    print(s)
+#Output:    # Will display the agent state after each node 
+# {'planner': {'plan': 'I. Introduction\n    A. Brief overview of Langchain and Langsmith\n    B. Thesis statement: Exploring the differences between Langchain and Langsmith\n\nII. Langchain\n    A. Definition and explanation\n    B. Key features and characteristics\n    C. Use cases and applications\n    D. Advantages and disadvantages\n\nIII. Langsmith\n    A. Definition and explanation\n    B. Key features and characteristics\n    C. Use cases and applications\n    D. Advantages and disadvantages\n\nIV. Comparison between Langchain and Langsmith\n    A. Technology stack\n    B. Scalability\n    C. Security\n    D. Performance\n    E. Adoption and popularity\n\nV. Conclusion\n    A. Recap of main differences between Langchain and Langsmith\n    B. Future outlook for both technologies\n    C. Final thoughts on the significance of understanding these differences'}}
+# {'research_plan': {'content': ['If you’re responsible for ensuring your AI models work in production, or you need to frequently debug and monitor your pipelines, Langsmith is your go-to tool. In short, while **Langchain** excels at managing and scaling model workflows, **Langsmith** is designed for those times when you need deep visibility and control over large, complex AI systems in production. But if you’re managing a **complex AI pipeline** with multiple models that need debugging and orchestrating, Langsmith’s capabilities become essential. If you’re debugging complex AI models or managing large-scale workflows with multiple moving parts, **Langsmith’s advanced debugging and orchestration features** will be indispensable. Additionally, if you’re working on **cross-platform model deployments** — say, running models on-prem and in the cloud simultaneously — Langsmith offers better orchestration and monitoring tools to handle the complexity.', 'In LLM application development, LangChain and LangSmith have become central tools for building and managing large language model-powered solutions. This article compares LangChain and LangSmith, focusing on their core features, integration options, and value for developers in the LLM application space. LangChain is an open-source framework that helps developers create LLM applications efficiently. LangSmith provides tools to debug, monitor, and improve LLM-powered agents, and offers a managed cloud service with a web UI. | LLM Evaluation | Minimal built-in support; developers typically create custom logic or use external tools. | Key Features | Modular chains and sequences, prompt templates, agent framework, data connectors, wide model support, community integrations. LangChain provides building blocks for LLM applications, while LangSmith offers observability and evaluation.', 'If you’re responsible for ensuring your AI models work in production, or you need to frequently debug and monitor your pipelines, Langsmith is your go-to tool. In short, while **Langchain** excels at managing and scaling model workflows, **Langsmith** is designed for those times when you need deep visibility and control over large, complex AI systems in production. But if you’re managing a **complex AI pipeline** with multiple models that need debugging and orchestrating, Langsmith’s capabilities become essential. If you’re debugging complex AI models or managing large-scale workflows with multiple moving parts, **Langsmith’s advanced debugging and orchestration features** will be indispensable. Additionally, if you’re working on **cross-platform model deployments** — say, running models on-prem and in the cloud simultaneously — Langsmith offers better orchestration and monitoring tools to handle the complexity.', 'In LLM application development, LangChain and LangSmith have become central tools for building and managing large language model-powered solutions. This article compares LangChain and LangSmith, focusing on their core features, integration options, and value for developers in the LLM application space. LangChain is an open-source framework that helps developers create LLM applications efficiently. LangSmith provides tools to debug, monitor, and improve LLM-powered agents, and offers a managed cloud service with a web UI. | LLM Evaluation | Minimal built-in support; developers typically create custom logic or use external tools. | Key Features | Modular chains and sequences, prompt templates, agent framework, data connectors, wide model support, community integrations. LangChain provides building blocks for LLM applications, while LangSmith offers observability and evaluation.', 'If you’re responsible for ensuring your AI models work in production, or you need to frequently debug and monitor your pipelines, Langsmith is your go-to tool. In short, while **Langchain** excels at managing and scaling model workflows, **Langsmith** is designed for those times when you need deep visibility and control over large, complex AI systems in production. But if you’re managing a **complex AI pipeline** with multiple models that need debugging and orchestrating, Langsmith’s capabilities become essential. If you’re debugging complex AI models or managing large-scale workflows with multiple moving parts, **Langsmith’s advanced debugging and orchestration features** will be indispensable. Additionally, if you’re working on **cross-platform model deployments** — say, running models on-prem and in the cloud simultaneously — Langsmith offers better orchestration and monitoring tools to handle the complexity.', "LangSmith steps in to give you the tools you need to debug and monitor your models at scale, ensuring everything is running as expected in your AI system. You might think of LangSmith as LangChain's counterpart, but it takes things further by focusing on managing, debugging, and orchestrating AI and ML models. LangSmith steps in to give you the tools you need to debug and monitor your models at scale, ensuring everything is running as expected in your AI system. In short, while LangChain excels at managing and scaling model workflows, LangSmith is designed for when you need deep visibility and control over large, complex AI systems in production. If you're debugging complex AI models or managing large-scale workflows with multiple moving parts, LangSmith's advanced debugging and orchestration features will be indispensable."]}}
+# {'generate': {'draft': "**Title: A Comparative Analysis of Langchain and Langsmith in AI Model Management**\n\nI. Introduction\nLangchain and Langsmith are two prominent tools in the realm of AI model management, each serving distinct purposes in the development and deployment of AI systems. While Langchain focuses on managing and scaling model workflows efficiently, Langsmith is tailored for providing deep visibility and control over complex AI systems in production. This essay delves into the disparities between Langchain and Langsmith to elucidate their unique functionalities and applications.\n\nII. Langchain\nLangchain is an open-source framework designed to streamline the creation of large language model (LLM) applications. It offers modular chains and sequences, prompt templates, an agent framework, data connectors, wide model support, and community integrations. Developers leverage Langchain's building blocks to construct LLM applications efficiently. However, Langchain lacks built-in support for LLM evaluation, often necessitating the use of custom logic or external tools.\n\nIII. Langsmith\nIn contrast, Langsmith provides tools for debugging, monitoring, and enhancing LLM-powered agents. It offers advanced debugging and orchestration features crucial for managing complex AI pipelines with multiple moving parts. Additionally, Langsmith presents a managed cloud service with a web UI, enhancing observability and evaluation capabilities for developers working on large-scale AI systems.\n\nIV. Comparison between Langchain and Langsmith\nA. Technology Stack: Langchain focuses on providing building blocks for LLM applications, while Langsmith emphasizes observability and evaluation tools.\nB. Scalability: Langchain excels in managing and scaling model workflows, whereas Langsmith offers advanced debugging and orchestration features for complex AI systems.\nC. Security: Both Langchain and Langsmith prioritize security; however, Langsmith's monitoring tools enhance security by providing deep visibility into AI systems.\nD. Performance: Langchain enhances performance through efficient workflow management, while Langsmith's debugging features optimize model performance.\nE. Adoption and Popularity: Langchain is favored for its efficiency in LLM application development, while Langsmith gains popularity for its advanced debugging and monitoring capabilities.\n\nV. Conclusion\nIn conclusion, understanding the distinctions between Langchain and Langsmith is paramount for developers navigating the landscape of AI model management. While Langchain streamlines the development of LLM applications, Langsmith offers indispensable tools for debugging and monitoring complex AI systems. By recognizing the strengths and weaknesses of each tool, developers can make informed decisions to optimize their AI workflows effectively. Embracing the unique functionalities of Langchain and Langsmith paves the way for enhanced AI model management and deployment practices in the future.", 'revision_number': 2}}
+# {'reflect': {'critique': "**Critique:**\n\nThe essay provides a clear and structured comparison between Langchain and Langsmith in the context of AI model management. The introduction effectively sets the stage for the discussion, outlining the purpose of the essay. The subsequent sections delve into the functionalities of each tool, highlighting their strengths and differences. The conclusion effectively summarizes the key points discussed in the essay.\n\n**Recommendations:**\n\n1. **Depth and Detail:** While the essay provides a good overview of Langchain and Langsmith, consider delving deeper into specific features, functionalities, and use cases of each tool. Providing more detailed examples or case studies could help illustrate the practical applications of Langchain and Langsmith in AI model management.\n\n2. **Expansion on Limitations:** It would be beneficial to include a section discussing the limitations or challenges associated with both Langchain and Langsmith. This could provide a more comprehensive understanding for readers evaluating these tools for their own projects.\n\n3. **Real-world Examples:** Incorporating real-world examples or scenarios where Langchain and Langsmith have been successfully utilized could enhance the essay's credibility and practical relevance.\n\n4. **Comparative Analysis:** While the essay does compare the two tools across different aspects, consider providing a more nuanced analysis by exploring how Langchain and Langsmith complement each other or can be used in conjunction for comprehensive AI model management.\n\n5. **Recommendations for Developers:** Offer specific recommendations or guidelines for developers on when to choose Langchain over Langsmith or vice versa based on project requirements, team expertise, scalability needs, etc.\n\n6. **Length:** Consider expanding the essay to provide a more comprehensive analysis, possibly by including a section on future trends or developments in AI model management tools.\n\nOverall, the essay is well-structured and informative, but incorporating the above recommendations could further enrich the content and provide readers with a more in-depth understanding of Langchain and Langsmith in AI model management."}}
+
+# {'research_critique': {'content': ['If you’re responsible for ensuring your AI models work in production, or you need to frequently debug and monitor your pipelines, Langsmith is your go-to tool. In short, while **Langchain** excels at managing and scaling model workflows, **Langsmith** is designed for those times when you need deep visibility and control over large, complex AI systems in production. But if you’re managing a **complex AI pipeline** with multiple models that need debugging and orchestrating, Langsmith’s capabilities become essential. If you’re debugging complex AI models or managing large-scale workflows with multiple moving parts, **Langsmith’s advanced debugging and orchestration features** will be indispensable. Additionally, if you’re working on **cross-platform model deployments** — say, running models on-prem and in the cloud simultaneously — Langsmith offers better orchestration and monitoring tools to handle the complexity.', 'In LLM application development, LangChain and LangSmith have become central tools for building and managing large language model-powered solutions. This article compares LangChain and LangSmith, focusing on their core features, integration options, and value for developers in the LLM application space. LangChain is an open-source framework that helps developers create LLM applications efficiently. LangSmith provides tools to debug, monitor, and improve LLM-powered agents, and offers a managed cloud service with a web UI. | LLM Evaluation | Minimal built-in support; developers typically create custom logic or use external tools. | Key Features | Modular chains and sequences, prompt templates, agent framework, data connectors, wide model support, community integrations. LangChain provides building blocks for LLM applications, while LangSmith offers observability and evaluation.', 'If you’re responsible for ensuring your AI models work in production, or you need to frequently debug and monitor your pipelines, Langsmith is your go-to tool. In short, while **Langchain** excels at managing and scaling model workflows, **Langsmith** is designed for those times when you need deep visibility and control over large, complex AI systems in production. But if you’re managing a **complex AI pipeline** with multiple models that need debugging and orchestrating, Langsmith’s capabilities become essential. If you’re debugging complex AI models or managing large-scale workflows with multiple moving parts, **Langsmith’s advanced debugging and orchestration features** will be indispensable. Additionally, if you’re working on **cross-platform model deployments** — say, running models on-prem and in the cloud simultaneously — Langsmith offers better orchestration and monitoring tools to handle the complexity.', 'In LLM application development, LangChain and LangSmith have become central tools for building and managing large language model-powered solutions. This article compares LangChain and LangSmith, focusing on their core features, integration options, and value for developers in the LLM application space. LangChain is an open-source framework that helps developers create LLM applications efficiently. LangSmith provides tools to debug, monitor, and improve LLM-powered agents, and offers a managed cloud service with a web UI. | LLM Evaluation | Minimal built-in support; developers typically create custom logic or use external tools. | Key Features | Modular chains and sequences, prompt templates, agent framework, data connectors, wide model support, community integrations. LangChain provides building blocks for LLM applications, while LangSmith offers observability and evaluation.', 'If you’re responsible for ensuring your AI models work in production, or you need to frequently debug and monitor your pipelines, Langsmith is your go-to tool. In short, while **Langchain** excels at managing and scaling model workflows, **Langsmith** is designed for those times when you need deep visibility and control over large, complex AI systems in production. But if you’re managing a **complex AI pipeline** with multiple models that need debugging and orchestrating, Langsmith’s capabilities become essential. If you’re debugging complex AI models or managing large-scale workflows with multiple moving parts, **Langsmith’s advanced debugging and orchestration features** will be indispensable. Additionally, if you’re working on **cross-platform model deployments** — say, running models on-prem and in the cloud simultaneously — Langsmith offers better orchestration and monitoring tools to handle the complexity.', "LangSmith steps in to give you the tools you need to debug and monitor your models at scale, ensuring everything is running as expected in your AI system. You might think of LangSmith as LangChain's counterpart, but it takes things further by focusing on managing, debugging, and orchestrating AI and ML models. LangSmith steps in to give you the tools you need to debug and monitor your models at scale, ensuring everything is running as expected in your AI system. In short, while LangChain excels at managing and scaling model workflows, LangSmith is designed for when you need deep visibility and control over large, complex AI systems in production. If you're debugging complex AI models or managing large-scale workflows with multiple moving parts, LangSmith's advanced debugging and orchestration features will be indispensable.", "[![Image 3](https://cdn.prod.website-files.com/65b8cd72835ceeacd4449a53/68e8e27023585643370a6471_icons.svg) LangChain Quick start agents with any model provider](https://www.langchain.com/langchain)[![Image 4](https://cdn.prod.website-files.com/65b8cd72835ceeacd4449a53/68e8e270417338c7f027082d_d035ce400e48f9bc4dd0578d0e3e3211_icons-1.svg) LangGraph Build custom agents with low-level control](https://www.langchain.com/langgraph)[![Image 5](https://cdn.prod.website-files.com/65b8cd72835ceeacd4449a53/68f20863b71dbae1af829979_DeepAgents.svg) Deep Agents New Use planning, memory, and sub-agents for complex, long-running tasks](https://github.com/langchain-ai/deepagents) [![Image 6](https://cdn.prod.website-files.com/65b8cd72835ceeacd4449a53/68e8e270df09334914882b88_Frame%209.svg) Observability Debug and monitor in-depth traces](https://www.langchain.com/langsmith/observability)[![Image 7](https://cdn.prod.website-files.com/65b8cd72835ceeacd4449a53/68e8e270f9e8de1d368764a8_Frame%20206.svg) Evaluation Iterate on prompts and models](https://www.langchain.com/langsmith/evaluation)[![Image 8](https://cdn.prod.website-files.com/65b8cd72835ceeacd4449a53/68e8e2709eef27fc61465416_Frame%20100039.svg) Deployment Ship and scale agents in production](https://www.langchain.com/langsmith/deployment) [![Image 67](https://cdn.prod.website-files.com/65b8cd72835ceeacd4449a53/680a284548300b0261543d2e_logo_Replit.svg)![Image 68](https://cdn.prod.website-files.com/65b8cd72835ceeacd4449a53/681c7597a78988d463e5d100_Group%2070.svg)](https://blog.langchain.dev/customers-replit/) [![Image 69](https://cdn.prod.website-files.com/65b8cd72835ceeacd4449a53/680a1dfda253f7223b13bac8_d9e260826e5b7426f8f02e0eee665d8b_logo_rakuten.svg)![Image 70](https://cdn.prod.website-files.com/65b8cd72835ceeacd4449a53/681c7597a78988d463e5d100_Group%2070.svg)](https://blog.langchain.dev/customers-rakuten/) [![Image 71](https://cdn.prod.website-files.com/65b8cd72835ceeacd4449a53/6819fde80c00e748f53c881f_logo_klarna.svg)![Image 72](https://cdn.prod.website-files.com/65b8cd72835ceeacd4449a53/681c7597a78988d463e5d100_Group%2070.svg)](https://blog.langchain.dev/customers-klarna/) [![Image 73](https://cdn.prod.website-files.com/65b8cd72835ceeacd4449a53/6819fe5973e7714382bddd35_logo_morningstar.svg)![Image 74](https://cdn.prod.website-files.com/65b8cd72835ceeacd4449a53/681c7597a78988d463e5d100_Group%2070.svg)](https://blog.langchain.dev/morningstar-intelligence-engine-puts-personalized-investment-insights-at-analysts-fingertips/) [![Image 75](https://cdn.prod.website-files.com/65b8cd72835ceeacd4449a53/6819fe7f44e8a32e29c579f7_logo_lovable.svg)![Image 76](https://cdn.prod.website-files.com/65b8cd72835ceeacd4449a53/681c7597a78988d463e5d100_Group%2070.svg)](https://blog.langchain.dev/customers-lovable/) [![Image 77](https://cdn.prod.website-files.com/65b8cd72835ceeacd4449a53/6819fda7d5be8df12d501368_The_Home_Depot-Logo.wine%201.svg)](https://www.langchain.com/#) [![Image 78](https://cdn.prod.website-files.com/65b8cd72835ceeacd4449a53/680a2845c7235e92f485a254_Klarna_Logo_black%201.svg) Financial Services Klarna's AI assistant reduced customer query resolution time by 80%, powered by LangSmith and LangGraph.](https://blog.langchain.dev/customers-klarna/)[![Image 79](https://cdn.prod.website-files.com/65b8cd72835ceeacd4449a53/68e8de0dceca1502358e8e8f_logo_Elastic.svg) B2B SaaS Elastic’s AI security assistant, built with LangSmith and LangGraph, cut alert response times for 20,000+ customers.](https://blog.langchain.com/langchain-partners-with-elastic-to-launch-the-elastic-ai-assistant/)[![Image 80](https://cdn.prod.website-files.com/65b8cd72835ceeacd4449a53/68e8de0d42e1a2f38a3d182d_logo_Replit.svg) AI/ML Replit's AI Agent serves 30+ million developers. ![Image 81](https://cdn.prod.website-files.com/65b8cd72835ceeacd4449a53/65c6a38f9c53ec71f5fc73de_langchain-word.svg)", 'import jsonfrom langchain_core.prompts import ChatPromptTemplatefrom langchain_openai import ChatOpenAIdef get_current_weather(location, unit="fahrenheit"):  weather_info = {      "location": location,      "temperature": "72",      "unit": unit,      "forecast":["sunny","windy"]  }  return json.dumps(weather_info)# define functionfunction = [    {        "name":"get_current_weather",        "description": "get the current weeather in a given location",        "parameters":{            "type":"object",            "properties": {                "location":{                    "type":"string",                    "description":"The city and state name for which you want to know weather, e.g. San Francisco, CA"                },                "unit":{                    "type":"string",                    "enum":["celsius","fahrenheit"]                }            },            "required":["location"],        }    }]# description is really important as it is passed to the LLM and based on it LLM will figure out if this function is to be used or not.prompt = ChatPromptTemplate.from_messages(    [        ("human", "{input}")    ])model = ChatOpenAI(    model="gpt-4",    temperature=0,    max_tokens=None,    timeout=None,    max_retries=2,    api_key=YOUR_API_KEY,  # if you prefer to pass api key in directly instaed of using env vars).bind(functions=function)prompt = ChatPromptTemplate.from_messages(    [        ("human", "{input}")    ])final_prompt = prompt.format_message(input="What\'s the weather like in Boston?")res = model.invoke(final_prompt)print(res) import from import from import def get_current_weatherlocation, unit="fahrenheit" "fahrenheit" "location" "temperature" "72" "unit" "forecast" "sunny" "windy" return', 'LangSmith and AutoGen tackle different but complementary challenges in AI application development: LangSmith excels at making complex language model (LLM) workflows transparent and testable, whereas AutoGen enables the orchestration of multiple AI “agents” to collaborate on tasks. LangSmith is a service offered by the LangChain team that provides end-to-end observability, tracing, and evaluation for LLM applications. Gathering token usage and cost data at the trace level helps teams monitor expenses and optimize prompts based on actual performance (LangSmith OpenTelemetry). LangSmith excels at rigorous monitoring, testing, and optimization of language model workflows, ideal for teams emphasizing precise observability. Choose LangSmith for robust oversight of AI performance, or AutoGen for flexibility and collaborative agent orchestration.', 'Langsmith offers the solution: an all-in-one platform for debugging, testing, evaluating and monitoring LLMs. With tools for data set creation and an interactive playground for optimizing inputs, Langsmith ensures that developers maintain an overview and control at all times. Langsmith offers decisive advantages for developers and companies that rely on language models: * **Wide range of applications:** Suitable for developers who test, optimize and monitor language models, as well as for companies that rely on powerful AI models. Langsmith is primarily focused on testing, monitoring and optimizing language models and supports developers in continuously improving the performance and reliability of their models. Langsmith offers a comprehensive solution for developers who want to efficiently test, monitor and optimize their language models.', '[![Image 3](https://cdn.prod.website-files.com/65b8cd72835ceeacd4449a53/68e8e27023585643370a6471_icons.svg) LangChain Quick start agents with any model provider](https://www.langchain.com/langchain)[![Image 4](https://cdn.prod.website-files.com/65b8cd72835ceeacd4449a53/68e8e270417338c7f027082d_d035ce400e48f9bc4dd0578d0e3e3211_icons-1.svg) LangGraph Build custom agents with low-level control](https://www.langchain.com/langgraph)[![Image 5](https://cdn.prod.website-files.com/65b8cd72835ceeacd4449a53/68f20863b71dbae1af829979_DeepAgents.svg) Deep Agents New Use planning, memory, and sub-agents for complex, long-running tasks](https://github.com/langchain-ai/deepagents) [![Image 6](https://cdn.prod.website-files.com/65b8cd72835ceeacd4449a53/68e8e270df09334914882b88_Frame%209.svg) Observability Debug and monitor in-depth traces](https://www.langchain.com/langsmith/observability)[![Image 7](https://cdn.prod.website-files.com/65b8cd72835ceeacd4449a53/68e8e270f9e8de1d368764a8_Frame%20206.svg) Evaluation Iterate on prompts and models](https://www.langchain.com/langsmith/evaluation)[![Image 8](https://cdn.prod.website-files.com/65b8cd72835ceeacd4449a53/68e8e2709eef27fc61465416_Frame%20100039.svg) Deployment Ship and scale agents in production](https://www.langchain.com/langsmith/deployment) ![Image 10](https://cdn.prod.website-files.com/65c81e88c254bb0f97633a71/6811d18a7cef47c38c0eeb48_C._H._Robinson_logo%201.svg) ![Image 11](https://cdn.prod.website-files.com/65c81e88c254bb0f97633a71/680b77461846a7cf254d8391_Klarna_Logo_black%201.svg) ![Image 12](https://cdn.prod.website-files.com/65c81e88c254bb0f97633a71/6811d1aa251143166667aec3_logo_Rakuten.svg) ![Image 13](https://cdn.prod.website-files.com/65c81e88c254bb0f97633a71/6811d1d39b2c6c806093f171_GitLab_logo_(2)%201.svg) ![Image 14](https://cdn.prod.website-files.com/65c81e88c254bb0f97633a71/680b77fc1381ca4ebea292b0_logo_Replit.svg) ![Image 15](https://cdn.prod.website-files.com/65c81e88c254bb0f97633a71/6811d1c1c55df212370b53fd_logo_Elastic.svg) ![Image 17](https://cdn.prod.website-files.com/65c81e88c254bb0f97633a71/681b568070e9f341ed73b877_logo_Cisco.svg) ![Image 19](https://cdn.prod.website-files.com/65c81e88c254bb0f97633a71/6811d18a7cef47c38c0eeb48_C._H._Robinson_logo%201.svg) ![Image 20](https://cdn.prod.website-files.com/65c81e88c254bb0f97633a71/680b77461846a7cf254d8391_Klarna_Logo_black%201.svg) ![Image 21](https://cdn.prod.website-files.com/65c81e88c254bb0f97633a71/6811d1aa251143166667aec3_logo_Rakuten.svg) ![Image 22](https://cdn.prod.website-files.com/65c81e88c254bb0f97633a71/6811d1d39b2c6c806093f171_GitLab_logo_(2)%201.svg) ![Image 23](https://cdn.prod.website-files.com/65c81e88c254bb0f97633a71/680b77fc1381ca4ebea292b0_logo_Replit.svg) ![Image 24](https://cdn.prod.website-files.com/65c81e88c254bb0f97633a71/6811d1c1c55df212370b53fd_logo_Elastic.svg) ![Image 26](https://cdn.prod.website-files.com/65c81e88c254bb0f97633a71/681b568070e9f341ed73b877_logo_Cisco.svg) [](https://www.langchain.com/customers#)![Image 27](https://cdn.prod.website-files.com/65c81e88c254bb0f97633a71/683ebed2db7596a00aeb6883_Frame%20441.webp) ![Image 28](https://cdn.prod.website-files.com/65c81e88c254bb0f97633a71/683ed8583aab2220a0584112_logo_morningstar.svg) [](https://www.langchain.com/customers#)![Image 29](https://cdn.prod.website-files.com/65c81e88c254bb0f97633a71/683ed5b3c305e1f0810ee165_Zrzut%20ekranu%202025-05-29%20o%2008.39.51%201.webp) [](https://www.langchain.com/customers#)![Image 31](https://cdn.prod.website-files.com/65c81e88c254bb0f97633a71/683ed6ec5f21e86c8f67b24e_Zrzut%20ekranu%202025-05-29%20o%2008.40.28%201.webp) ![Image 32](https://cdn.prod.website-files.com/65c81e88c254bb0f97633a71/683ed87d3aab2220a0585c54_logo_Rakuten.svg) [](https://www.langchain.com/customers#)![Image 33](https://cdn.prod.website-files.com/65c81e88c254bb0f97633a71/683ed8cdabbd877010c381e7_Zrzut%20ekranu%202025-05-29%20o%2008.42.08%201.webp) ![Image 34](https://cdn.prod.website-files.com/65c81e88c254bb0f97633a71/683ed8a197c2372e9514cfc8_logo_modern%20treasury.svg) [](https://www.langchain.com/customers#)![Image 35](https://cdn.prod.website-files.com/65c81e88c254bb0f97633a71/6847439da2d2ab267d523496_Screenshot%202025-06-09%20at%201.22.35%E2%80%AFPM.png) ![Image 36](https://cdn.prod.website-files.com/65c81e88c254bb0f97633a71/68474302ae6163d917d3450b_Pigment%20logo%20svg.svg) [](https://www.langchain.com/customers#)![Image 37](https://cdn.prod.website-files.com/65c81e88c254bb0f97633a71/684867863ea0b77fe80b1fd7_Screenshot%202025-06-10%20at%2010.12.29%E2%80%AFAM.png) ![Image 38](https://cdn.prod.website-files.com/65c81e88c254bb0f97633a71/683ed94b51c824411f773561_city-of-hope-logo-vector%201.svg) ![Image 39](https://cdn.prod.website-files.com/65c81e88c254bb0f97633a71/68403bcb15045b3eb73fa481_logo_Elastic.svg) ![Image 40](https://cdn.prod.website-files.com/65c81e88c254bb0f97633a71/68403f1e7aafbecebd57a732_logo_Trellix.svg) ![Image 41](https://cdn.prod.website-files.com/65c81e88c254bb0f97633a71/68403f761830d136e87c2757_logo_replit.svg) ![Image 42](https://cdn.prod.website-files.com/65c81e88c254bb0f97633a71/68403fd6b7af2641fb80d176_logo_chrobinson.svg) ![Image 43](https://cdn.prod.website-files.com/65c81e88c254bb0f97633a71/6840405d0c7f0d019851a934_logo_Elastic.svg) ![Image 44](https://cdn.prod.website-files.com/65c81e88c254bb0f97633a71/684040c76e0334123089b2ea_logo_podium.svg) ![Image 45](https://cdn.prod.website-files.com/65c81e88c254bb0f97633a71/684041be7034e54f87e91948_logo_vizient.svg) ![Image 46](https://cdn.prod.website-files.com/65c81e88c254bb0f97633a71/6840420bbd8fd31bd9231f03_logo_appfolio.svg) ![Image 47](https://cdn.prod.website-files.com/65c81e88c254bb0f97633a71/6840424d80dcf0badfc89841_logo_unify.svg) ![Image 48](https://cdn.prod.website-files.com/65c81e88c254bb0f97633a71/68404288fb8eec2e1f087004_logo_lovable.svg) ![Image 49](https://cdn.prod.website-files.com/65c81e88c254bb0f97633a71/684042c46a5fa9ce2365b8e7_logo_vodafone.svg) ![Image 50](https://cdn.prod.website-files.com/65c81e88c254bb0f97633a71/684296b214bd0067789cc95b_logo_dun.svg) ![Image 51](https://cdn.prod.website-files.com/65b8cd72835ceeacd4449a53/65c6a38f9c53ec71f5fc73de_langchain-word.svg)', '[Newsletter Curated insights on AI, Cloud & System Design](https://www.educative.io/newsletter)[Blog For developers, By developers](https://www.educative.io/blog)[Guides Step-by-step tutorials to master real-world tech skills](https://www.educative.io/guides)[Free Cheatsheets Download handy guides for tech topics](https://www.educative.io/cheatsheets)[Games Sharpen your skills with daily challenges](https://www.educative.io/games)[Compilers Execute code in an interactive environment](https://www.educative.io/compilers) [Preview](https://www.educative.io/courses/langchain-llm) 12 ways developers are using LangChain[#](https://www.educative.io/blog/langchain-usecases#12-ways-developers-are-using-LangChain) 1. Intelligent chatbots with memory[#](https://www.educative.io/blog/langchain-usecases#1-Intelligent-chatbots-with-memory) [Preview](https://www.educative.io/courses/build-your-own-chatbot-in-python) 2. Q&A over private documents and databases[#](https://www.educative.io/blog/langchain-usecases#2-QampA-over-private-documents-and-databases) 3. Code generation and debugging assistants[#](https://www.educative.io/blog/langchain-usecases#3-Code-generation-and-debugging-assistants) 4. Automated research and analysis bots[#](https://www.educative.io/blog/langchain-usecases#4-Automated-research-and-analysis-bots) 5. Workflow automation for productivity[#](https://www.educative.io/blog/langchain-usecases#5-Workflow-automation-for-productivity) 6. Legal document review and summarization[#](https://www.educative.io/blog/langchain-usecases#6-Legal-document-review-and-summarization) 7. Custom AI tutors and interactive learning apps[#](https://www.educative.io/blog/langchain-usecases#7-Custom-AI-tutors-and-interactive-learning-apps) 8. Multi-step report generation[#](https://www.educative.io/blog/langchain-usecases#8-Multi-step-report-generation) 9. Multi-agent collaboration environments[#](https://www.educative.io/blog/langchain-usecases#9-Multi-agent-collaboration-environments) Voice-to-insight apps and transcript analysis[#](https://www.educative.io/blog/langchain-usecases#10-Voice-to-insight-apps-and-transcript-analysis) Personalized e-commerce and product recommendation assistants[#](https://www.educative.io/blog/langchain-usecases#11-Personalized-e-commerce-and-product-recommendation-assistants) Real-time data monitoring and anomaly detection[#](https://www.educative.io/blog/langchain-usecases#12-Real-time-data-monitoring-and-anomaly-detection) Final word[#](https://www.educative.io/blog/langchain-usecases#Final-word)']}}
+
+# {'generate': {'draft': "**Title: Exploring the Contrasts Between Langchain and Langsmith**\n\nI. Introduction\nLangchain and Langsmith are two essential tools in the realm of AI application development. While both serve crucial roles, they cater to distinct needs and functionalities. This essay delves into the disparities between Langchain and Langsmith to provide a comprehensive understanding of their unique characteristics.\n\nII. Langchain\nLangchain is an open-source framework designed to facilitate the efficient creation of Language Model (LLM) applications. It offers modular chains and sequences, prompt templates, an agent framework, data connectors, wide model support, and community integrations. Langchain serves as a foundational tool for developers to build LLM applications effectively, albeit with minimal built-in support.\n\nIII. Langsmith\nIn contrast, Langsmith focuses on providing tools for debugging, monitoring, and enhancing LLM-powered agents. It offers advanced features for observability and evaluation, making it indispensable for managing large-scale workflows with multiple moving parts. Langsmith also provides a managed cloud service with a user-friendly web UI for enhanced accessibility.\n\nIV. Comparison between Langchain and Langsmith\nA. Technology Stack: Langchain emphasizes building blocks for LLM applications, while Langsmith prioritizes observability and evaluation tools.\nB. Scalability: Langchain excels in managing and scaling model workflows, whereas Langsmith offers advanced debugging and orchestration features for complex AI systems.\nC. Security: Both Langchain and Langsmith prioritize security, but Langsmith's focus on monitoring and evaluation enhances security measures.\nD. Performance: Langsmith's advanced debugging capabilities contribute to optimizing performance, while Langchain's modular approach aids in efficient application development.\nE. Adoption and Popularity: Langsmith's comprehensive monitoring and debugging features have garnered popularity among developers, while Langchain's open-source framework appeals to those seeking customizable solutions.\n\nV. Conclusion\nIn conclusion, understanding the distinctions between Langchain and Langsmith is crucial for developers and organizations working with AI applications. While Langchain offers foundational building blocks for LLM applications, Langsmith provides advanced tools for monitoring and debugging complex AI systems. Both tools play vital roles in the AI development landscape, and recognizing their unique strengths is essential for leveraging them effectively in various scenarios.", 'revision_number': 3}}
+
+
+#### Creating a GUI for the essay writer
+import warnings
+warnings.filterwarnings("ignore")
+
+from helper import ewriter, writer_gui
+MultiAgent = ewriter()
+app = writer_gui(MultiAgent.graph)
+app.launch()
+
+
+
+
+
+
+
+
+
+
+
