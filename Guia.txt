@@ -86,3 +86,18 @@ Secciones:
   - Creando update-agent
   - Exploracion: invocacion y almacenando instrucciones
   - Actualizando las insrtucciones
+
+--- C11 ---
+* Pydantic Basico
+  - Validacion basica
+  - Modelos avanzados y data coercion
+  - Validacion con JSON
+* Validando LLMs
+  - Validacion tradicional 
+  - Validacion condensado loop
+* APIs y Model Resolution Order 
+  - Explorando diferentes APIs
+  - Model Resolution Order (MRO)
+* Llamando Herramientas 
+  - Modelo con regex
+  - Funciones con Pydantic

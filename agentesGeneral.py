@@ -4771,3 +4771,721 @@ store.get(("lance",), "triage_ignore").value['prompt']
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#########################################################################
+#########################################################################
+### C11 ###
+#########################################################################
+#########################################################################
+    # Pydantic Basico #
+from pydantic import BaseModel, ValidationError, EmailStr
+import json
+from pydantic import Field
+from typing import Optional
+from datetime import date
+
+
+##### Validacion basica
+#### Modelo basico
+class UserInput(BaseModel):
+    name: str
+    email: EmailStr
+    query: str
+#### Validacion
+def validate_user_input(input_data):
+    try:
+        # Attempt to create a UserInput model instance from user input data
+        user_input = UserInput(**input_data)
+        print(f"✅ Valid user input created:")
+        print(f"{user_input.model_dump_json(indent=2)}")
+        return user_input
+    except ValidationError as e:
+        # Capture and display validation errors in a readable format
+        print(f"❌ Validation error occurred:")
+        for error in e.errors():
+            print(f"  - {error['loc'][0]}: {error['msg']}")
+        return None
+
+
+
+
+
+
+
+
+
+##### Modelos avanzados y data coercion
+#### Modelo avancado
+class UserInput(BaseModel):
+    name: str
+    email: EmailStr
+    query: str
+    order_id: Optional[int] = Field(
+        None,
+        description="5-digit order number (cannot start with 0)",
+        ge=10000,
+        le=99999
+    )
+    purchase_date: Optional[date] = None
+#### Data coercion
+input_data = {
+    "name": "Joe User",
+    "email": "joe.user@example.com",
+    "query": f"""I bought a laptop carrying case and it turned out to be 
+             the wrong size. I need to return it.""",
+    "order_id": "12345",    # Tiene que ser int
+    "purchase_date": "2025-12-31"
+}
+user_input = validate_user_input(input_data)
+#output:
+# ✅ Valid user input created:
+# {
+#   "name": "Joe User",
+#   "email": "joe.user@example.com",
+#   "query": "I bought a laptop carrying case and it turned out to be \n             the wrong size. I need to return it.",
+#   "order_id": 12345,
+#   "purchase_date": "2025-12-31"
+# }
+print(user_input.model_dump_json(indent=2))
+
+
+
+
+
+
+
+
+
+
+##### Validacion con JSON
+#### Data inicial
+json_data = '''
+{
+    "name": "Joe User",
+    "email": "joe.user@example.com",
+    "query": "I bought a keyboard and mouse and was overcharged.",
+    "order_id": 12345,
+    "purchase_date": "2025-12-31"
+}
+'''
+#### Parse the JSON string into a Python dictionary
+input_data = json.loads(json_data)
+print("Parsed JSON:", input_data)
+#### Validate the user iput data
+user_input = validate_user_input(input_data)
+print(user_input.model_dump_json(indent=2))
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#################################################################
+#################################################################
+    # Validando LLMs # 
+# Import necessary packages
+from pydantic import BaseModel, ValidationError, Field, EmailStr
+from typing import List, Literal, Optional
+import json
+from datetime import date
+from dotenv import load_dotenv
+import openai
+
+
+
+
+##### Validacion tradicional 
+#### Modelos
+class UserInput(BaseModel):
+    name: str
+    email: EmailStr
+    query: str
+    order_id: Optional[int] = Field(
+        None,
+        description="5-digit order number (cannot start with 0)",
+        ge=10000,
+        le=99999
+    )
+    purchase_date: Optional[date] = None
+class CustomerQuery(UserInput):
+    priority: str = Field(
+        ..., description="Priority level: low, medium, high"
+    )
+    category: Literal[
+        'refund_request', 'information_request', 'other'
+    ] = Field(..., description="Query category")
+    is_complaint: bool = Field(
+        ..., description="Whether this is a complaint"
+    )
+    tags: List[str] = Field(..., description="Relevant keyword tags")
+#### Funcion de Validacion
+def validate_with_model(data_model, llm_response):
+    try:
+        validated_data = data_model.model_validate_json(llm_response)
+        print("data validation successful!")
+        print(validated_data.model_dump_json(indent=2))
+        return validated_data, None
+    except ValidationError as e:
+        print(f"error validating data: {e}")
+        error_message = (
+            f"This response generated a validation error: {e}."
+        )
+        return None, error_message
+#### Funcion para intentar otra vez
+def create_retry_prompt(
+    original_prompt, original_response, error_message
+):
+    retry_prompt = f"""
+This is a request to fix an error in the structure of an llm_response.
+Here is the original request:
+<original_prompt>
+{original_prompt}
+</original_prompt>
+
+Here is the original llm_response:
+<llm_response>
+{original_response}
+</llm_response>
+
+This response generated an error: 
+<error_message>
+{error_message}
+</error_message>
+
+Compare the error message and the llm_response and identify what 
+needs to be fixed or removed
+in the llm_response to resolve this error. 
+
+Respond ONLY with valid JSON. Do not include any explanations or 
+other text or formatting before or after the JSON string.
+"""
+    return retry_prompt
+#### Invocacion
+### SAmple
+example_response_structure = f"""{{
+    name="Example User",
+    email="user@example.com",
+    query="I ordered a new computer monitor and it arrived with the screen cracked. I need to exchange it for a new one.",
+    order_id=12345,
+    purchase_date="2025-12-31",
+    priority="medium",
+    category="refund_request",
+    is_complaint=True,
+    tags=["monitor", "support", "exchange"] 
+}}"""
+### Prompt
+prompt = f"""
+Please analyze this user query\n {user_input.model_dump_json(indent=2)}:
+
+Return your analysis as a JSON object matching this exact structure 
+and data types:
+{example_response_structure}
+
+Respond ONLY with valid JSON. Do not include any explanations or 
+other text or formatting before or after the JSON object.
+"""
+### Creando LLM
+client = openai.OpenAI()
+def call_llm(prompt, model="gpt-4o"):
+    response = client.chat.completions.create(
+        model=model,
+        messages=[{"role": "user", "content": prompt}]
+    )
+    return response.choices[0].message.content
+### Validacion
+response_content = call_llm(prompt)
+validated_data, validation_error = validate_with_model(
+    CustomerQuery, response_content
+)
+while  validation_error:
+    validation_retry_prompt = create_retry_prompt(
+        original_prompt=prompt,
+        original_response=response_content,
+        error_message=validation_error
+    )
+    prompt = validation_retry_prompt
+    response_content = call_llm(prompt)
+    validated_data, validation_error = validate_with_model(
+        CustomerQuery, response_content
+    )
+
+
+
+
+
+
+
+##### Validacion condensado loop
+def validate_llm_response(
+    prompt, data_model, n_retry=5, model="gpt-4o"
+):
+    # Initial LLM call
+    response_content = call_llm(prompt, model=model)
+    current_prompt = prompt
+
+    # Try to validate with the model
+    # attempt: 0=initial, 1=first retry, ...
+    for attempt in range(n_retry + 1):
+
+        validated_data, validation_error = validate_with_model(
+            data_model, response_content
+        )
+
+        if validation_error:
+            if attempt < n_retry:
+                print(f"retry {attempt} of {n_retry} failed, trying again...")
+            else:
+                print(f"Max retries reached. Last error: {validation_error}")
+                return None, (
+                    f"Max retries reached. Last error: {validation_error}"
+                )
+
+            validation_retry_prompt = create_retry_prompt(
+                original_prompt=current_prompt,
+                original_response=response_content,
+                error_message=validation_error
+            )
+            response_content = call_llm(
+                validation_retry_prompt, model=model
+            )
+            current_prompt = validation_retry_prompt
+            continue
+
+        # If you get here, both parsing and validation succeeded
+        return validated_data, None
+validated_data, error = validate_llm_response(
+    prompt, CustomerQuery
+)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#################################################################
+#################################################################
+    # APIs y Model Resolution Order # 
+from pydantic import BaseModel, Field, EmailStr
+from typing import List, Literal, Optional
+from openai import OpenAI
+import instructor
+import anthropic
+from dotenv import load_dotenv
+from datetime import date
+from pydantic_ai import Agent
+import nest_asyncio
+nest_asyncio.apply()
+
+
+
+
+##### Explorando diferentes APIs
+#### Modelos
+class UserInput(BaseModel):
+    name: str
+    email: EmailStr
+    query: str
+    order_id: Optional[int] = Field(
+        None,
+        description="5-digit order number (cannot start with 0)",
+        ge=10000,
+        le=99999
+    )
+    purchase_date: Optional[date] = None
+class CustomerQuery(UserInput):
+    priority: str = Field(
+        ..., description="Priority level: low, medium, high"
+    )
+    category: Literal[
+        'refund_request', 'information_request', 'other'
+    ] = Field(..., description="Query category")
+
+    is_complaint: bool = Field(
+        ..., description="Whether this is a complaint"
+    )
+    tags: List[str] = Field(..., description="Relevant keyword tags")
+#### Prompt
+user_input_json = '''{
+    "name": "Joe User",
+    "email": "joe.user@example.com",
+    "query": "I ordered a new computer monitor and it arrived with the screen cracked. This is the second time this has happened. I need a replacement ASAP.",
+    "order_number": 12345,
+    "purchase_date": "2025-12-31"
+}'''
+
+prompt = (
+    f"Analyze the following customer query {user_input} "
+    f"and provide a structured response."
+)
+#### Anthropic
+anthropic_client = instructor.from_anthropic(
+    anthropic.Anthropic()
+)
+response = anthropic_client.messages.create(
+    model="claude-3-7-sonnet-latest",  
+    max_tokens=1024,
+    messages=[
+        {
+            "role": "user", 
+            "content": prompt
+        }
+    ],
+    response_model=CustomerQuery  
+)
+#### OpenAI
+openai_client = OpenAI()
+response = openai_client.responses.parse(
+    model="gpt-4o",
+    input=[{"role": "user", "content": prompt}],
+    text_format=CustomerQuery
+)
+#### Pydantic API
+agent = Agent(
+    model="google-gla:gemini-2.0-flash",
+    output_type=CustomerQuery,
+)
+response = agent.run_sync(prompt)
+print(type(response.output))
+    #output: <class '__main__.CustomerQuery'>
+print(response.output.model_dump_json(indent=2))
+
+
+
+
+
+
+
+
+
+
+
+##### Model Resolution Order (MRO)
+#### Funcion general
+def print_class_inheritence(llm_response):
+    for cls in type(llm_response).mro():
+        print(f"{cls.__module__}.{cls.__name__}")
+#### Invocacion
+print_class_inheritence(response)
+#output
+# openai.types.responses.parsed_response.ParsedResponse[CustomerQuery]
+# openai.types.responses.parsed_response.ParsedResponse
+# openai.types.responses.response.Response
+# openai._models.GenericModel
+# openai._compat.GenericModel
+# openai.BaseModel
+# pydantic.main.BaseModel
+# typing.Generic
+# builtins.object
+print(response.output_parsed.model_dump_json(indent=2))
+#outout
+# {
+#   "name": "Joe User",
+#   "email": "joe.user@example.com",
+#   "query": "I ordered a new computer monitor and it arrived with the screen cracked. This is the second time this has happened. I need a replacement ASAP.",
+#   "order_id": null,
+#   "purchase_date": "2025-12-31",
+#   "priority": "high",
+#   "category": "refund_request",
+#   "is_complaint": true,
+#   "tags": [
+#     "damaged_goods",
+#     "replacement_request",
+#     "customer_complaint"
+#   ]
+# }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#################################################################
+#################################################################
+    # Llamando Herramientas #
+from pydantic import BaseModel, Field, EmailStr, field_validator
+from pydantic_ai import Agent
+from typing import Literal, List, Optional
+from datetime import datetime, date
+import json
+from openai import OpenAI
+import anthropic
+import instructor
+from dotenv import load_dotenv
+load_dotenv()
+import nest_asyncio
+nest_asyncio.apply()
+
+
+
+
+
+##### Modelo con regex
+class UserInput(BaseModel):
+    name: str = Field(..., description="User's name")
+    email: EmailStr = Field(..., description="User's email address")
+    query: str = Field(..., description="User's query")
+    order_id: Optional[str] = Field(
+        None,
+        description="Order ID if available (format: ABC-12345)"
+    )
+    # Validate order_id format (e.g., ABC-12345)
+    @field_validator("order_id")
+    def validate_order_id(cls, order_id):
+        import re
+        if order_id is None:
+            return order_id
+        pattern = r"^[A-Z]{3}-\d{5}$"
+        if not re.match(pattern, order_id):
+            raise ValueError(
+                "order_id must be in format ABC-12345 "
+                "(3 uppercase letters, dash, 5 digits)"
+            )
+        return order_id
+    purchase_date: Optional[date] = None
+class CustomerQuery(UserInput):
+    priority: str = Field(
+        ..., description="Priority level: low, medium, high"
+    )
+    category: Literal[
+        'refund_request', 'information_request', 'other'
+    ] = Field(..., description="Query category")
+    is_complaint: bool = Field(
+        ..., description="Whether this is a complaint"
+    )
+    tags: List[str] = Field(..., description="Relevant keyword tags")
+
+
+
+
+
+
+
+##### Funciones con Pydantic
+#### Modelos
+class FAQLookupArgs(BaseModel):
+    query: str = Field(..., description="User's query") 
+    tags: List[str] = Field(
+        ..., description="Relevant keyword tags from the customer query"
+    )
+class CheckOrderStatusArgs(BaseModel):
+    order_id: str = Field(
+        ..., description="Customer's order ID (format: ABC-12345)"
+    )
+    email: EmailStr = Field(..., description="Customer's email address")
+
+    @field_validator("order_id")
+    def validate_order_id(cls, order_id):
+        import re
+        pattern = r"^[A-Z]{3}-\d{5}$"
+        if not re.match(pattern, order_id):
+            raise ValueError(
+                "order_id must be in format ABC-12345 "
+                "(3 uppercase letters, dash, 5 digits)"
+            )
+        return order_id
+#### Creando samples
+### Create a fake FAQ database as a list of entries with keywords
+faq_db = [
+    {
+        "question": "How can I reset my password?",
+        "answer": "To reset your password, click 'Forgot Password' on the sign-in page and follow the instructions sent to your email.",
+        "keywords": ["password", "reset", "account"]
+    },
+    {
+        "question": "How long does shipping take?",
+        "answer": "Standard shipping takes 3-5 business days. You can track your order in your account dashboard.",
+        "keywords": ["shipping", "delivery", "order", "tracking"]
+    },
+    {
+        "question": "How can I return an item?",
+        "answer": "You can return any item within 30 days of purchase. Visit our returns page to start the process.",
+        "keywords": ["return", "refund", "exchange"]
+    },
+    {
+        "question": "How can I delete my account?",
+        "answer": "To delete your account, go to your account settings tab and select 'delete account'.",
+        "keywords": ["delete", "account", "remove"]
+    }
+]
+### Create a fake order database
+order_db = {
+    "ABC-12345": {
+        "status": "shipped", "estimated_delivery": "2025-12-05",
+        "purchase_date": "2025-12-01", "email": "joe@example.com"
+    },
+    "XYZ-23456": {
+        "status": "processing", "estimated_delivery": "2025-12-15",
+        "purchase_date": "2025-12-10", "email": "sue@example.com"
+    },
+    "QWE-34567": {
+        "status": "delivered", "estimated_delivery": "2025-12-20",
+        "purchase_date": "2025-12-18", "email": "bob@example.com"
+    }
+}
+#### Funciones/herramientas
+### Define your FAQ lookup tool
+def lookup_faq_answer(args: FAQLookupArgs) -> str:
+    """Look up an FAQ answer by matching tags and words in query 
+    to FAQ entry keywords."""
+    query_words = set(word.lower() for word in args.query.split())
+    tag_set = set(tag.lower() for tag in args.tags)
+    best_match = None
+    best_score = 0
+    for faq in faq_db:
+        keywords = set(k.lower() for k in faq["keywords"])
+        score = len(keywords & tag_set) + len(keywords & query_words)
+        if score > best_score:
+            best_score = score
+            best_match = faq
+    if best_match and best_score > 0:
+        return best_match["answer"]
+    return "Sorry, I couldn't find an FAQ answer for your question."
+### Define your check order status tool
+def check_order_status(args: CheckOrderStatusArgs):
+    """Simulate checking the status of a customer's order by 
+    order_id and email."""
+    order = order_db.get(args.order_id)
+    if not order:
+        return {
+            "order_id": args.order_id,
+            "status": "not found",
+            "estimated_delivery": None,
+            "note": "order_id not found"
+        }
+    if args.email.lower() != order.get("email", "").lower():
+        return {
+            "order_id": args.order_id,
+            "status": order["status"],
+            "estimated_delivery": order["estimated_delivery"],
+            "note": "order_id found but email mismatch"
+        }
+    return {
+        "order_id": args.order_id,
+        "status": order["status"],
+        "estimated_delivery": order["estimated_delivery"],
+        "note": "order_id and email match"
+    }
+#### Creating pydantic models to strucutre a final support ticket
+class OrderDetails(BaseModel):
+    status: str
+    estimated_delivery: str
+    note: str
+
+class SupportTicket(CustomerQuery):
+    recommended_next_action: Literal[
+        'escalate_to_agent', 'send_faq_response', 
+        'send_order_status', 'no_action_needed'
+    ] = Field(
+        ..., description="LLM's recommended next action for support"
+    )
+    order_details: Optional[OrderDetails] = Field(
+        None, description="Order details if action is send_order_status"
+    )
+    faq_response: Optional[str] = Field(
+        None, description="FAQ response if action is send_faq_response"
+    )
+    creation_date: datetime = Field(
+        ..., description="Date and time the ticket was created"
+    )
+
+
+
+
+
+
+
+
+
+
