@@ -2933,3 +2933,1841 @@ app.launch()
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#########################################################################
+#########################################################################
+### C8 ###
+#########################################################################
+#########################################################################
+    # Assistente Autonomo - Base #
+import os
+from dotenv import load_dotenv
+_ = load_dotenv()
+from pydantic import BaseModel, Field
+from typing_extensions import TypedDict, Literal, Annotated
+from langchain.chat_models import init_chat_model
+from prompts import triage_system_prompt, triage_user_prompt
+from langchain_core.tools import tool
+from prompts import agent_system_prompt
+from langgraph.prebuilt import create_react_agent
+from langgraph.graph import add_messages
+from langgraph.graph import StateGraph, START, END
+from langgraph.types import Command
+from typing import Literal
+from IPython.display import Image, display
+
+##### Router Agente
+#### Setup General
+profile = {
+    "name": "John",
+    "full_name": "John Doe",
+    "user_profile_background": "Senior software engineer leading a team of 5 developers",
+}
+
+prompt_instructions = {
+    "triage_rules": { # Se defininen en 'triage_system_prompt'
+        "ignore": "Marketing newsletters, spam emails, mass company announcements",
+        "notify": "Team member out sick, build system notifications, project status updates",
+        "respond": "Direct questions from team members, meeting requests, critical bug reports",
+    },
+    "agent_instructions": "Use these tools when appropriate to help manage John's tasks efficiently."
+}
+
+email = { # Example incoming email
+    "from": "Alice Smith <alice.smith@company.com>",
+    "to": "John Doe <john.doe@company.com>",
+    "subject": "Quick question about API documentation",
+    "body": """
+Hi John,
+
+I was reviewing the API documentation for the new authentication service and noticed a few endpoints seem to be missing from the specs. Could you help clarify if this was intentional or if we should update the docs?
+
+Specifically, I'm looking at:
+- /auth/refresh
+- /auth/validate
+
+Thanks!
+Alice""",
+}
+#### Modelo Pydantic 
+    #Ensures that router agent will have and output dict with
+            #"reasining" and "classication" keys
+class Router(BaseModel):
+    """Analyze the unread email and route it according to its content."""
+
+    reasoning: str = Field(
+        description="Step-by-step reasoning behind the classification."
+    )
+        # Reasoning behind why LLM made the decision it chose
+    classification: Literal["ignore", "respond", "notify"] = Field(
+        description="The classification of an email: 'ignore' for irrelevant emails, "
+        "'notify' for important information that doesn't need a response, "
+        "'respond' for emails that need a reply",
+    )   #  Los 'ignore se definen abajo en 'triage_system_prompt'
+#### Creando Router agente
+llm = init_chat_model("openai:gpt-4o-mini")
+llm_router = llm.with_structured_output(Router)
+
+
+
+
+
+
+##### Diferentes formas de ingenieria de prompt
+#### Prompts GENERALES
+print(triage_system_prompt)
+#Output:
+# < Role >
+# You are {full_name}'s executive assistant. You are a top-notch executive assistant who cares about {name} performing as well as possible.
+# </ Role >
+
+# < Background >
+# {user_profile_background}. 
+# </ Background >
+
+# < Instructions >
+
+# {name} gets lots of emails. Your job is to categorize each email into one of three categories:
+
+# 1. IGNORE - Emails that are not worth responding to or tracking
+# 2. NOTIFY - Important information that {name} should know about but doesn't require a response
+# 3. RESPOND - Emails that need a direct response from {name}
+
+# Classify the below email into one of these categories.
+
+# </ Instructions >
+
+# < Rules >
+# Emails that are not worth responding to:
+# {triage_no}
+
+# There are also other things that {name} should know about, but don't require an email response. For these, you should notify {name} (using the `notify` response). Examples of this include:
+# {triage_notify}
+
+# Emails that are worth responding to:
+# {triage_email}
+# </ Rules >
+
+# < Few shot examples >
+# {examples}
+# </ Few shot examples >
+print(triage_user_prompt)
+#Output:
+# Please determine how to handle the below email thread:
+
+# From: {author}
+# To: {to}
+# Subject: {subject}
+# {email_thread}
+print(agent_system_prompt)
+#output:
+# < Role >
+# You are {full_name}'s executive assistant. You are a top-notch executive assistant who cares about {name} performing as well as possible.
+# </ Role >
+
+# < Tools >
+# You have access to the following tools to help manage {name}'s communications and schedule:
+
+# 1. write_email(to, subject, content) - Send emails to specified recipients
+# 2. schedule_meeting(attendees, subject, duration_minutes, preferred_day) - Schedule calendar meetings
+# 3. check_calendar_availability(day) - Check available time slots for a given day
+# </ Tools >
+
+# < Instructions >
+# {instructions}
+# </ Instructions >
+#### Transformacion con '.format': de general a especifico
+system_prompt = triage_system_prompt.format(
+    full_name=profile["full_name"],
+    name=profile["name"],
+    examples=None,
+    user_profile_background=profile["user_profile_background"],
+    triage_no=prompt_instructions["triage_rules"]["ignore"],
+    triage_notify=prompt_instructions["triage_rules"]["notify"],
+    triage_email=prompt_instructions["triage_rules"]["respond"],
+)
+user_prompt = triage_user_prompt.format(
+    author=email["from"],
+    to=email["to"],
+    subject=email["subject"],
+    email_thread=email["body"],
+)
+#### Transformacion con funciones: de general a especifico
+def create_prompt(state):
+    return [
+        {
+            "role": "system", 
+            "content": agent_system_prompt.format(
+                instructions=prompt_instructions["agent_instructions"],
+                **profile
+                )
+        }
+    ] + state['messages']
+#### Invocacion
+result = llm_router.invoke(
+    [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+)
+print(type(result))
+    #output: <class '__main__.Router'>
+print(result)
+
+
+
+
+
+
+
+
+
+
+
+##### Pre-built ReAct agente
+#### Creando herramientas
+@tool
+def write_email(to: str, subject: str, content: str) -> str:
+    """Write and send an email."""
+    # Placeholder response - in real app would send email
+    return f"Email sent to {to} with subject '{subject}'"
+
+@tool
+def schedule_meeting(
+    attendees: list[str], 
+    subject: str, 
+    duration_minutes: int, 
+    preferred_day: str
+) -> str:
+    """Schedule a calendar meeting."""
+    # Placeholder response - in real app would check calendar and schedule
+    return f"Meeting '{subject}' scheduled for {preferred_day} with {len(attendees)} attendees"
+
+@tool
+def check_calendar_availability(day: str) -> str:
+    """Check calendar availability for a given day."""
+    # Placeholder response - in real app would check actual calendar
+    return f"Available times on {day}: 9:00 AM, 2:00 PM, 4:00 PM"
+#### Creando pre-built ReAct
+tools=[write_email, schedule_meeting, check_calendar_availability]
+agent = create_react_agent(
+    "openai:gpt-4o",
+    tools=tools,
+    prompt=create_prompt,
+)
+print(dir(agent))
+#### INvoke main state-agent and explore
+response = agent.invoke(
+    {"messages": [{
+        "role": "user", 
+        "content": "what is my availability for tuesday?"
+    }]}
+)
+
+response["messages"][-1].pretty_print()
+#Output:
+# ================================== Ai Message ==================================
+
+# You have the following available time slots on Tuesday: 
+
+# - 9:00 AM
+# - 2:00 PM
+# - 4:00 PM
+
+# If you need to schedule a meeting or an appointment, please let me know how I can assist you further!
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+##### MAS-grafo
+#### Estado del agente
+class State(TypedDict):
+    email_input: dict
+    messages: Annotated[list, add_messages]
+#### Node para router agente
+def triage_router(state: State) -> Command[
+    Literal["response_agent", "__end__"]
+]:
+    author = state['email_input']['author']
+    to = state['email_input']['to']
+    subject = state['email_input']['subject']
+    email_thread = state['email_input']['email_thread']
+
+    system_prompt = triage_system_prompt.format(
+        full_name=profile["full_name"],
+        name=profile["name"],
+        user_profile_background=profile["user_profile_background"],
+        triage_no=prompt_instructions["triage_rules"]["ignore"],
+        triage_notify=prompt_instructions["triage_rules"]["notify"],
+        triage_email=prompt_instructions["triage_rules"]["respond"],
+        examples=None
+    )
+    user_prompt = triage_user_prompt.format(
+        author=author, 
+        to=to, 
+        subject=subject, 
+        email_thread=email_thread
+    )
+    result = llm_router.invoke(
+        [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+    )
+    if result.classification == "respond":
+        print("📧 Classification: RESPOND - This email requires a response")
+        goto = "response_agent"
+        update = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": f"Respond to the email {state['email_input']}",
+                }
+            ]
+        }
+    elif result.classification == "ignore":
+        print("🚫 Classification: IGNORE - This email can be safely ignored")
+        update = None
+        goto = END
+    elif result.classification == "notify":
+        # If real life, this would do something else
+        print("🔔 Classification: NOTIFY - This email contains important information")
+        update = None
+        goto = END
+    else:
+        raise ValueError(f"Invalid classification: {result.classification}")
+    return Command(goto=goto, update=update)
+#### Creando MAS - grafo
+email_agent = StateGraph(State)
+email_agent = email_agent.add_node(triage_router)
+email_agent = email_agent.add_node("response_agent", agent)
+email_agent = email_agent.add_edge(START, "triage_router")
+email_agent = email_agent.compile()
+#### Visualizando grafo
+display(Image(email_agent.get_graph(xray=True).draw_mermaid_png()))
+#### Comparando 'StateGraph'
+### Uninitialized
+print(dir(StateGraph))
+### Initialzied
+print(dir(email_agent))
+#### Invocacion de MAS
+email_input = {
+    "author": "Marketing Team <marketing@amazingdeals.com>",
+    "to": "John Doe <john.doe@company.com>",
+    "subject": "🔥 EXCLUSIVE OFFER: Limited Time Discount on Developer Tools! 🔥",
+    "email_thread": """Dear Valued Developer,
+
+Don't miss out on this INCREDIBLE opportunity! 
+
+🚀 For a LIMITED TIME ONLY, get 80% OFF on our Premium Developer Suite! 
+
+✨ FEATURES:
+- Revolutionary AI-powered code completion
+- Cloud-based development environment
+- 24/7 customer support
+- And much more!
+
+💰 Regular Price: $999/month
+🎉 YOUR SPECIAL PRICE: Just $199/month!
+
+🕒 Hurry! This offer expires in:
+24 HOURS ONLY!
+
+Click here to claim your discount: https://amazingdeals.com/special-offer
+
+Best regards,
+Marketing Team
+---
+To unsubscribe, click here
+""",
+}
+
+response = email_agent.invoke({"email_input": email_input})
+    #Output:
+    # 🚫 Classification: IGNORE - This email can be safely ignored
+
+
+email_input = {
+    "author": "Alice Smith <alice.smith@company.com>",
+    "to": "John Doe <john.doe@company.com>",
+    "subject": "Quick question about API documentation",
+    "email_thread": """Hi John,
+
+I was reviewing the API documentation for the new authentication service and noticed a few endpoints seem to be missing from the specs. Could you help clarify if this was intentional or if we should update the docs?
+
+Specifically, I'm looking at:
+- /auth/refresh
+- /auth/validate
+
+Thanks!
+Alice""",
+}
+
+response = email_agent.invoke({"email_input": email_input})
+    #output:
+    # 📧 Classification: RESPOND - This email requires a response
+
+for m in response["messages"]:
+    m.pretty_print()
+#Otuput:
+# ================================ Human Message =================================
+
+# Respond to the email {'author': 'Alice Smith <alice.smith@company.com>', 'to': 'John Doe <john.doe@company.com>', 'subject': 'Quick question about API documentation', 'email_thread': "Hi John,\n\nI was reviewing the API documentation for the new authentication service and noticed a few endpoints seem to be missing from the specs. Could you help clarify if this was intentional or if we should update the docs?\n\nSpecifically, I'm looking at:\n- /auth/refresh\n- /auth/validate\n\nThanks!\nAlice"}
+# ================================== Ai Message ==================================
+# Tool Calls:
+#   write_email (call_a8HKveq3cxlp90hT1UwXrk4g)
+#  Call ID: call_a8HKveq3cxlp90hT1UwXrk4g
+#   Args:
+#     to: alice.smith@company.com
+#     subject: Re: Quick question about API documentation
+#     content: Hi Alice,
+
+# Thank you for bringing this to my attention. I'm looking into the API documentation for the new authentication service. It appears that the endpoints /auth/refresh and /auth/validate may have been unintentionally left out. Let me verify this with the development team.
+
+# I'll get back to you with the confirmation and any necessary updates to the documentation by tomorrow.
+
+# Thank you for your diligence!
+
+# Best regards,
+
+# John Doe
+# ================================= Tool Message =================================
+# Name: write_email
+
+# Email sent to alice.smith@company.com with subject 'Re: Quick question about API documentation'
+# ================================== Ai Message ==================================
+
+# I've sent a response to Alice, clarifying the situation about the missing API endpoints and assuring her that you're looking into it with the development team. You promised to get back with a confirmation and any updates by tomorrow. Let me know if you need any more help with this matter!
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#####################################################################
+#####################################################################
+    # Asistente Autonomo - Mem Semantica #
+import os
+from dotenv import load_dotenv
+_ = load_dotenv()
+from pydantic import BaseModel, Field
+from typing_extensions import TypedDict, Literal, Annotated
+from langchain.chat_models import init_chat_model
+from langchain_core.tools import tool
+from langgraph.prebuilt import create_react_agent
+from langgraph.store.memory import InMemoryStore
+from langgraph.checkpoint.memory import InMemorySaver
+from langmem import create_manage_memory_tool, create_search_memory_tool
+from langgraph.prebuilt import create_react_agent
+from langgraph.graph import StateGraph, START, END
+from langgraph.types import Command
+from typing import Literal
+from IPython.display import Image, display
+from langgraph.graph import add_messages
+
+
+
+##### Creando in-mem persistence
+#### Creacion 
+### Largo-plazo
+store = InMemoryStore(
+    index={"embed": "openai:text-embedding-3-small"}
+)
+### Corto-plazo
+snapshot_store = InMemorySaver()
+#### LG mem. wrappers
+manage_memory_tool = create_manage_memory_tool(
+    namespace=(
+        "email_assistant", 
+        "{langgraph_user_id}",
+        "collection"
+    )
+)
+search_memory_tool = create_search_memory_tool(
+    namespace=(
+        "email_assistant",
+        "{langgraph_user_id}",
+        "collection"
+    )
+)
+#### Explorando mem. wrappers
+### Manage Mem
+print(manage_memory_tool.name)
+    #output: manage_memeory
+
+print(manage_memory_tool.description)
+# otuput:
+# Create, update, or delete persistent MEMORIES to persist across conversations.
+# Include the MEMORY ID when updating or deleting a MEMORY. Omit when creating a new MEMORY - it will be created for you.
+# Proactively call this tool when you:
+
+# 1. Identify a new USER preference.
+# 2. Receive an explicit USER request to remember something or otherwise alter your behavior.
+# 3. Are working and want to record important context.
+# 4. Identify that an existing MEMORY is incorrect or outdated.
+
+print(manage_memory_tool.args)
+#output:
+# {'content': {'anyOf': [{'type': 'string'}, {'type': 'null'}],
+#   'default': None,
+#   'title': 'Content'},
+#  'action': {'default': 'create',
+#   'enum': ['create', 'update', 'delete'],
+#   'title': 'Action',
+#   'type': 'string'},
+#  'id': {'anyOf': [{'format': 'uuid', 'type': 'string'}, {'type': 'null'}],
+#   'default': None,
+#   'title': 'Id'}}
+
+### Search mem
+print(search_memory_tool.name)
+    #Otuput: search_memory
+
+print(search_memory_tool.description)
+#Output:
+#'Search your long-term memories for information relevant to your current context.'
+
+print(search_memory_tool.args)
+#otuput:
+# {'query': {'title': 'Query', 'type': 'string'},
+#  'limit': {'default': 10, 'title': 'Limit', 'type': 'integer'},
+#  'offset': {'default': 0, 'title': 'Offset', 'type': 'integer'},
+#  'filter': {'anyOf': [{'type': 'object'}, {'type': 'null'}],
+#   'default': None,
+#   'title': 'Filter'}}
+
+
+
+
+
+
+
+
+
+
+##### ReAct con in-mem persistence
+#### Prompt
+agent_system_prompt_memory = """
+< Role >
+You are {full_name}'s executive assistant. You are a top-notch executive assistant who cares about {name} performing as well as possible.
+</ Role >
+
+< Tools >
+You have access to the following tools to help manage {name}'s communications and schedule:
+
+1. write_email(to, subject, content) - Send emails to specified recipients
+2. schedule_meeting(attendees, subject, duration_minutes, preferred_day) - Schedule calendar meetings
+3. check_calendar_availability(day) - Check available time slots for a given day
+4. manage_memory - Store any relevant information about contacts, actions, discussion, etc. in memory for future reference
+5. search_memory - Search for any relevant information that may have been stored in memory
+</ Tools >
+
+< Instructions >
+{instructions}
+</ Instructions >
+"""
+
+def create_prompt(state):
+    return [
+        {
+            "role": "system", 
+            "content": agent_system_prompt_memory.format(
+                instructions=prompt_instructions["agent_instructions"], 
+                **profile
+            )
+        }
+    ] + state['messages']
+#### Creando ReAct agente
+tools= [
+    write_email, 
+    schedule_meeting,
+    check_calendar_availability,
+    manage_memory_tool,
+    search_memory_tool
+]
+response_agent = create_react_agent(
+    "openai:gpt-4o-mini",
+    tools=tools,
+    prompt=create_prompt,
+    # Use this to ensure the store is passed to the agent 
+    store=store,
+    checkpointer=snapshot_store
+)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+##### Invocando conversacion con in-mem persistence
+#### Creando thread
+config = {"configurable": {"langgraph_user_id": "lance", "thread_id":"1"}}
+    # OJO: la razon que necesitamos 'langgraph_user_id' es 
+            # por la forma en que se creo las herramientas de memoria
+        # En especial su 'namespace' donde guardan la informacion
+    # Thread will have both:
+        #"langgraph_user_id" for long-term mem. (persistence - VectorStore)
+        # "thread_id" for short-term mem. (temporal - StateSnapshot)
+#### Verificando 'manage_memory'
+response1 = response_agent.invoke(
+    {"messages": [{"role": "user", "content": "Jim is my friend"}]},
+    config=config
+)
+
+for m in response1["messages"]:
+    m.pretty_print()
+#output:
+# ================================ Human Message =================================
+
+# Jim is my friend
+# ================================== Ai Message ==================================
+# Tool Calls:
+#   manage_memory (call_DuJNWNlYi1qJfgi2vIRLxTLJ)
+#  Call ID: call_DuJNWNlYi1qJfgi2vIRLxTLJ
+#   Args:
+#     content: Jim is John's friend.
+#     action: create
+# ================================= Tool Message =================================
+# Name: manage_memory
+
+# created memory a6b9e4c5-2db7-49c9-98f7-a7eaa2534442
+# ================================== Ai Message ==================================
+
+# I've noted that Jim is your friend. Let me know if there's anything else you'd like to add or manage!
+#### Verificando 'search_memory'
+response2 = response_agent.invoke(
+    {"messages": [{"role": "user", "content": "who is jim?"}]},
+    config=config
+)
+
+for m in response2["messages"]:
+    m.pretty_print()
+#Output:
+# ================================ Human Message =================================
+
+# Jim is my friend
+# ================================== Ai Message ==================================
+# Tool Calls:
+#   manage_memory (call_DuJNWNlYi1qJfgi2vIRLxTLJ)
+#  Call ID: call_DuJNWNlYi1qJfgi2vIRLxTLJ
+#   Args:
+#     content: Jim is John's friend.
+#     action: create
+# ================================= Tool Message =================================
+# Name: manage_memory
+
+# created memory a6b9e4c5-2db7-49c9-98f7-a7eaa2534442
+# ================================== Ai Message ==================================
+
+# I've noted that Jim is your friend. Let me know if there's anything else you'd like to add or manage!
+# ================================ Human Message =================================
+
+# who is jim?
+# ================================== Ai Message ==================================
+# Tool Calls:
+#   search_memory (call_p5NHrQqBU0UzXqNU1XvylOTM)
+#  Call ID: call_p5NHrQqBU0UzXqNU1XvylOTM
+#   Args:
+#     query: Jim
+# ================================= Tool Message =================================
+# Name: search_memory
+
+# [{"namespace": ["email_assistant", "lance", "collection"], "key": "a6b9e4c5-2db7-49c9-98f7-a7eaa2534442", "value": {"content": "Jim is John's friend."}, "created_at": "2025-10-30T18:40:06.053646+00:00", "updated_at": "2025-10-30T18:40:06.053653+00:00", "score": 0.4343276126880873}]
+# ================================== Ai Message ==================================
+
+# Jim is your friend. If you need more specific details or context about Jim, feel free to let me know!
+
+
+
+
+
+
+
+
+
+
+
+##### Explorando mem: corto- y largo- plazo
+#### "StateSnapshot" mem corto-plazo
+state = response_agent.get_state(config)
+print(state)
+for msg in state.values['messages']:
+    print(type(msg))
+    print(msg)
+    print('\n\n')
+#### Mem largo-plazo
+store.list_namespaces()
+    #output: [('email_assistant', 'lance', 'collection')]
+
+store.search(('email_assistant', 'lance', 'collection'))
+    #Output:
+    #[Item(namespace=['email_assistant', 'lance', 'collection'], key='a6b9e4c5-2db7-49c9-98f7-a7eaa2534442', value={'content': "Jim is John's friend."}, created_at='2025-10-30T18:40:06.053646+00:00', updated_at='2025-10-30T18:40:06.053653+00:00', score=None)]
+
+store.search(('email_assistant', 'lance', 'collection'), query="jim")
+    #Output:
+    # [Item(namespace=['email_assistant', 'lance', 'collection'], key='a6b9e4c5-2db7-49c9-98f7-a7eaa2534442', value={'content': "Jim is John's friend."}, created_at='2025-10-30T18:40:06.053646+00:00', updated_at='2025-10-30T18:40:06.053653+00:00', score=0.553310811429239)]
+        #Note: last attr: "score" = 0.5533108...
+
+
+
+
+
+
+
+
+
+##### Creando MAS-grafo con in-mem persistence ReAct
+    #OJO: es importante epxlorar los persistent mem de
+            # assitente y ReAct agente, aparte
+        # El ReAct esta dentro del assitente, cual es la relacion
+                # que se manifsta entre nested agentes
+#### Estado
+class State(TypedDict):
+    email_input: dict
+    messages: Annotated[list, add_messages]
+
+
+### Create node fcnality for router simple-agent
+def triage_router(state: State) -> Command[
+    Literal["response_agent", "__end__"]
+]:
+    author = state['email_input']['author']
+    to = state['email_input']['to']
+    subject = state['email_input']['subject']
+    email_thread = state['email_input']['email_thread']
+
+    system_prompt = triage_system_prompt.format(
+        full_name=profile["full_name"],
+        name=profile["name"],
+        user_profile_background=profile["user_profile_background"],
+        triage_no=prompt_instructions["triage_rules"]["ignore"],
+        triage_notify=prompt_instructions["triage_rules"]["notify"],
+        triage_email=prompt_instructions["triage_rules"]["respond"],
+        examples=None
+    )
+    user_prompt = triage_user_prompt.format(
+        author=author, 
+        to=to, 
+        subject=subject, 
+        email_thread=email_thread
+    )
+    result = llm_router.invoke(
+        [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+    )
+    if result.classification == "respond":
+        print("📧 Classification: RESPOND - This email requires a response")
+        goto = "response_agent"
+        update = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": f"Respond to the email {state['email_input']}",
+                }
+            ]
+        }
+    elif result.classification == "ignore":
+        print("🚫 Classification: IGNORE - This email can be safely ignored")
+        update = None
+        goto = END
+    elif result.classification == "notify":
+        # If real life, this would do something else
+        print("🔔 Classification: NOTIFY - This email contains important information")
+        update = None
+        goto = END
+    else:
+        raise ValueError(f"Invalid classification: {result.classification}")
+    return Command(goto=goto, update=update)
+
+### Assembling email assistnat
+email_agent = StateGraph(State)
+email_agent = email_agent.add_node(triage_router)
+email_agent = email_agent.add_node("response_agent", response_agent)
+email_agent = email_agent.add_edge(START, "triage_router")
+email_agent1 = email_agent.compile(store=store, checkpointer=snapshot_store)
+
+### Visuale email assistant graph
+display(Image(email_agent1.get_graph(xray=True).draw_mermaid_png()))
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#########################################################################
+#########################################################################
+    # Semantic + Episodic Mem #
+import os
+from dotenv import load_dotenv
+_ = load_dotenv()
+import uuid
+from langgraph.store.memory import InMemoryStore
+from langgraph.checkpoint.memory import InMemorySaver
+from pydantic import BaseModel, Field
+from typing_extensions import TypedDict, Literal, Annotated
+from langchain.chat_models import init_chat_model
+from prompts import triage_user_prompt
+from langgraph.graph import StateGraph, START, END
+from langgraph.types import Command
+from typing import Literal
+from IPython.display import Image, display
+from langgraph.graph import add_messages
+from langchain_core.tools import tool
+from langmem import create_manage_memory_tool, create_search_memory_tool
+from langgraph.prebuilt import create_react_agent
+
+
+
+
+##### Creando train data para episodic mem.
+#### Input
+email1 = { # SAme as "email" above
+    "author": "Alice Smith <alice.smith@company.com>",
+    "to": "John Doe <john.doe@company.com>",
+    "subject": "Quick question about API documentation",
+    "email_thread": """Hi John,
+
+    I was reviewing the API documentation for the new authentication service and noticed a few endpoints seem to be missing from the specs. Could you help clarify if this was intentional or if we should update the docs?
+
+    Specifically, I'm looking at:
+    - /auth/refresh
+    - /auth/validate
+
+    Thanks!
+    Alice"""
+}
+
+email2 = {
+    "author": "Sarah Chen <sarah.chen@company.com>",
+    "to": "John Doe <john.doe@company.com>",
+    "subject": "Update: Backend API Changes Deployed to Staging",
+    "email_thread": """Hi John,
+
+    Just wanted to let you know that I've deployed the new authentication endpoints we discussed to the staging environment. Key changes include:
+
+    - Implemented JWT refresh token rotation
+    - Added rate limiting for login attempts
+    - Updated API documentation with new endpoints
+
+    All tests are passing and the changes are ready for review. You can test it out at staging-api.company.com/auth/*
+
+    No immediate action needed from your side - just keeping you in the loop since this affects the systems you're working on.
+
+    Best regards,
+    Sarah
+    """
+}
+#### Label
+data1 = {
+    "email": email1,
+    "label": "respond"
+}
+
+data2 = {
+    "email": email2,
+    "label": "ignore"
+}
+#### Almacenando ejemplos
+store.put(
+    ("email_assistant", "lance", "examples"), 
+    str(uuid.uuid4()), 
+    data1
+)
+
+store.put(
+    ("email_assistant", "lance", "examples"), 
+    str(uuid.uuid4()), 
+    data2
+)
+
+
+
+
+
+
+
+
+
+
+
+##### Formateador para utilizar train data
+#### Planilla
+template = """Email Subject: {subject}
+Email From: {from_email}
+Email To: {to_email}
+Email Content: 
+```
+{content}
+```
+> Triage Result: {result}"""
+#### Funcion
+def format_few_shot_examples(examples):
+    strs = ["Here are some previous examples:"]
+    for eg in examples:
+        strs.append(
+            template.format(
+                subject=eg.value["email"]["subject"],
+                to_email=eg.value["email"]["to"],
+                from_email=eg.value["email"]["author"],
+                content=eg.value["email"]["email_thread"][:400],
+                result=eg.value["label"],
+            )
+        )
+    return "\n\n------------\n\n".join(strs)
+#### Verificacion
+email3 = {
+    "author": "Sarah Chen <sarah.chen@company.com>",
+    "to": "John Doe <john.doe@company.com>",
+    "subject": "Update: Backend API Changes Deployed to Staging",
+    "email_thread": """Hi John,
+    
+    Wanted to let you know that I've deployed the new authentication endpoints we discussed to the staging environment. Key changes include:
+    
+    - Implemented JWT refresh token rotation
+    - Added rate limiting for login attempts
+    - Updated API documentation with new endpoints
+    
+    All tests are passing and the changes are ready for review. You can test it out at staging-api.company.com/auth/*
+    
+    No immediate action needed from your side - just keeping you in the loop since this affects the systems you're working on.
+    
+    Best regards,
+    Sarah
+    """,
+}
+    #Similar, BUT DIFF., than "email2"
+        # The "Just" is missing in this email
+
+### Simulating retrieval of few-shot example
+results = store.search(
+    ("email_assistant", "lance", "examples"),
+    query=str({"email": email3}),
+    limit=1)
+
+print(format_few_shot_examples(results))
+
+
+
+
+
+
+
+
+
+
+
+
+##### Creando router agente con episodic mem.
+#### Prompt
+    # "Few-shot examples" es la nueva adicion
+triage_system_prompt = """
+< Role >
+You are {full_name}'s executive assistant. You are a top-notch executive assistant who cares about {name} performing as well as possible.
+</ Role >
+
+< Background >
+{user_profile_background}. 
+</ Background >
+
+< Instructions >
+
+{name} gets lots of emails. Your job is to categorize each email into one of three categories:
+
+1. IGNORE - Emails that are not worth responding to or tracking
+2. NOTIFY - Important information that {name} should know about but doesn't require a response
+3. RESPOND - Emails that need a direct response from {name}
+
+Classify the below email into one of these categories.
+
+</ Instructions >
+
+< Rules >
+Emails that are not worth responding to:
+{triage_no}
+
+There are also other things that {name} should know about, but don't require an email response. For these, you should notify {name} (using the `notify` response). Examples of this include:
+{triage_notify}
+
+Emails that are worth responding to:
+{triage_email}
+</ Rules >
+
+< Few shot examples >
+
+Here are some examples of previous emails, and how they should be handled.
+Follow these examples more than any instructions above
+
+{examples}
+</ Few shot examples >
+"""
+#### Creando router
+llm = init_chat_model("openai:gpt-4o-mini")
+
+class Router(BaseModel):
+    """Analyze the unread email and route it according to its content."""
+
+    reasoning: str = Field(
+        description="Step-by-step reasoning behind the classification."
+    )
+    classification: Literal["ignore", "respond", "notify"] = Field(
+        description="The classification of an email: 'ignore' for irrelevant emails, "
+        "'notify' for important information that doesn't need a response, "
+        "'respond' for emails that need a reply",
+    )
+
+llm_router = llm.with_structured_output(Router)
+
+
+
+
+
+
+
+##### Creando MAS- grafo con sem. + epi.
+#### Estado de grafo
+class State(TypedDict):
+    email_input: dict
+    messages: Annotated[list, add_messages]
+#### Create the fcnality for the router node
+def triage_router(state: State, config, store) -> Command[
+    Literal["response_agent", "__end__"]
+]:
+    # Extracting data from the agent state
+    author = state['email_input']['author']
+    to = state['email_input']['to']
+    subject = state['email_input']['subject']
+    email_thread = state['email_input']['email_thread']
+
+    # Setting up the namespace to get correct long-term storage
+    namespace = (
+        "email_assistant",
+        config['configurable']['langgraph_user_id'],
+        "examples"
+    )
+
+    # Extracting the emails that most closely match incoing email
+    examples = store.search(
+        namespace, 
+        query=str({"email": state['email_input']})
+    ) 
+
+    # Turning extracted emails into few-shot examples
+    examples=format_few_shot_examples(examples)
+    
+    # Creating syst.prompt for router
+    system_prompt = triage_system_prompt.format(
+        full_name=profile["full_name"],
+        name=profile["name"],
+        user_profile_background=profile["user_profile_background"],
+        triage_no=prompt_instructions["triage_rules"]["ignore"],
+        triage_notify=prompt_instructions["triage_rules"]["notify"],
+        triage_email=prompt_instructions["triage_rules"]["respond"],
+        examples=examples
+    )
+
+    # Creating user prompt for router
+    user_prompt = triage_user_prompt.format(
+        author=author, 
+        to=to, 
+        subject=subject, 
+        email_thread=email_thread
+    )
+
+    # Invoking the router agent
+    result = llm_router.invoke(
+        [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+    )
+
+    # Logic based on router's response
+    if result.classification == "respond":
+        print("📧 Classification: RESPOND - This email requires a response")
+        goto = "response_agent"
+        update = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": f"Respond to the email {state['email_input']}",
+                }
+            ]
+        }
+    elif result.classification == "ignore":
+        print("🚫 Classification: IGNORE - This email can be safely ignored")
+        update = None
+        goto = END
+    elif result.classification == "notify":
+        # If real life, this would do something else
+        print("🔔 Classification: NOTIFY - This email contains important information")
+        update = None
+        goto = END
+    else:
+        raise ValueError(f"Invalid classification: {result.classification}")
+    return Command(goto=goto, update=update)
+
+#### ReAct agente
+### Herramientas
+@tool
+def write_email(to: str, subject: str, content: str) -> str:
+    """Write and send an email."""
+    # Placeholder response - in real app would send email
+    return f"Email sent to {to} with subject '{subject}'"
+
+@tool
+def schedule_meeting(
+    attendees: list[str], 
+    subject: str, 
+    duration_minutes: int, 
+    preferred_day: str
+) -> str:
+    """Schedule a calendar meeting."""
+    # Placeholder response - in real app would check calendar and schedule
+    return f"Meeting '{subject}' scheduled for {preferred_day} with {len(attendees)} attendees"
+
+@tool
+def check_calendar_availability(day: str) -> str:
+    """Check calendar availability for a given day."""
+    # Placeholder response - in real app would check actual calendar
+    return f"Available times on {day}: 9:00 AM, 2:00 PM, 4:00 PM"
+
+manage_memory_tool = create_manage_memory_tool(
+    namespace=(
+        "email_assistant", 
+        "{langgraph_user_id}",
+        "collection"
+    )
+)
+search_memory_tool = create_search_memory_tool(
+    namespace=(
+        "email_assistant",
+        "{langgraph_user_id}",
+        "collection"
+    )
+)
+### Prompt
+agent_system_prompt_memory = """
+< Role >
+You are {full_name}'s executive assistant. You are a top-notch executive assistant who cares about {name} performing as well as possible.
+</ Role >
+
+< Tools >
+You have access to the following tools to help manage {name}'s communications and schedule:
+
+1. write_email(to, subject, content) - Send emails to specified recipients
+2. schedule_meeting(attendees, subject, duration_minutes, preferred_day) - Schedule calendar meetings
+3. check_calendar_availability(day) - Check available time slots for a given day
+4. manage_memory - Store any relevant information about contacts, actions, discussion, etc. in memory for future reference
+5. search_memory - Search for any relevant information that may have been stored in memory
+</ Tools >
+
+< Instructions >
+{instructions}
+</ Instructions >
+"""
+
+def create_prompt(state):
+    return [
+        {
+            "role": "system", 
+            "content": agent_system_prompt_memory.format(
+                instructions=prompt_instructions["agent_instructions"], 
+                **profile
+            )
+        }
+    ] + state['messages']
+### Creando ReAct
+tools= [
+    write_email, 
+    schedule_meeting,
+    check_calendar_availability,
+    manage_memory_tool,
+    search_memory_tool
+]
+response_agent = create_react_agent(
+    "openai:gpt-4o",
+    tools=tools,
+    prompt=create_prompt,
+    # Use this to ensure the store is passed to the agent 
+    store=store,
+    # checkpointer=checkptr
+        #Won't use bc it's not the focus of this section
+)
+#### Creando MAS- grafo
+#### Creating email assistant MAS-agent
+email_agent = StateGraph(State)
+email_agent = email_agent.add_node(triage_router)
+email_agent = email_agent.add_node("response_agent", response_agent)
+email_agent = email_agent.add_edge(START, "triage_router")
+email_agent = email_agent.compile(
+    store=store,
+    # checkpointer=checkptr
+        #Omitted bc it's not the focus of this section
+)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#####################################################################
+#####################################################################
+    # Sem. + Epi. + Procedural #
+import os
+from dotenv import load_dotenv
+_ = load_dotenv()
+from langgraph.store.memory import InMemoryStore
+from pydantic import BaseModel, Field
+from typing_extensions import TypedDict, Literal, Annotated
+from langchain.chat_models import init_chat_model
+from prompts import triage_user_prompt
+from langgraph.graph import StateGraph, START, END
+from langgraph.types import Command
+from typing import Literal
+from IPython.display import Image, display
+
+from langgraph.graph import add_messages
+from langchain_core.tools import tool
+from langmem import create_manage_memory_tool, create_search_memory_tool
+from langgraph.prebuilt import create_react_agent
+from langmem import create_multi_prompt_optimizer
+import json
+
+
+
+##### Semantic + Episodic
+#### Setup
+profile = {
+    "name": "John",
+    "full_name": "John Doe",
+    "user_profile_background": "Senior software engineer leading a team of 5 developers",
+}
+
+prompt_instructions = {
+    "triage_rules": {
+        "ignore": "Marketing newsletters, spam emails, mass company announcements",
+        "notify": "Team member out sick, build system notifications, project status updates",
+        "respond": "Direct questions from team members, meeting requests, critical bug reports",
+    },
+    "agent_instructions": "Use these tools when appropriate to help manage John's tasks efficiently."
+}
+
+email = {
+    "from": "Alice Smith <alice.smith@company.com>",
+    "to": "John Doe <john.doe@company.com>",
+    "subject": "Quick question about API documentation",
+    "body": """
+Hi John,
+
+I was reviewing the API documentation for the new authentication service and noticed a few endpoints seem to be missing from the specs. Could you help clarify if this was intentional or if we should update the docs?
+
+Specifically, I'm looking at:
+- /auth/refresh
+- /auth/validate
+
+Thanks!
+Alice""",
+}
+#### Semantic: long-term y short-term 
+### Long-term
+store = InMemoryStore(
+    index={"embed": "openai:text-embedding-3-small"} #embed model
+)
+### Short-term
+checkptr = InMemorySaver()
+### ReAct agent
+## Tools
+@tool
+def write_email(to: str, subject: str, content: str) -> str:
+    """Write and send an email."""
+    # Placeholder response - in real app would send email
+    return f"Email sent to {to} with subject '{subject}'"
+
+@tool
+def schedule_meeting(
+    attendees: list[str], 
+    subject: str, 
+    duration_minutes: int, 
+    preferred_day: str
+) -> str:
+    """Schedule a calendar meeting."""
+    # Placeholder response - in real app would check calendar and schedule
+    return f"Meeting '{subject}' scheduled for {preferred_day} with {len(attendees)} attendees"
+
+@tool
+def check_calendar_availability(day: str) -> str:
+    """Check calendar availability for a given day."""
+    # Placeholder response - in real app would check actual calendar
+    return f"Available times on {day}: 9:00 AM, 2:00 PM, 4:00 PM"
+
+manage_memory_tool = create_manage_memory_tool(
+    namespace=(
+        "email_assistant", 
+        "{langgraph_user_id}",
+        "collection"
+    )
+)
+
+search_memory_tool = create_search_memory_tool(
+    namespace=(
+        "email_assistant",
+        "{langgraph_user_id}",
+        "collection"
+    )
+)
+## Prompt
+agent_system_prompt_memory = """
+< Role >
+You are {full_name}'s executive assistant. You are a top-notch executive assistant who cares about {name} performing as well as possible.
+</ Role >
+
+< Tools >
+You have access to the following tools to help manage {name}'s communications and schedule:
+
+1. write_email(to, subject, content) - Send emails to specified recipients
+2. schedule_meeting(attendees, subject, duration_minutes, preferred_day) - Schedule calendar meetings
+3. check_calendar_availability(day) - Check available time slots for a given day
+4. manage_memory - Store any relevant information about contacts, actions, discussion, etc. in memory for future reference
+5. search_memory - Search for any relevant information that may have been stored in memory
+</ Tools >
+
+< Instructions >
+{instructions}
+</ Instructions >
+"""
+#### Epidosic: few-short examples
+### Template
+template = """Email Subject: {subject}
+Email From: {from_email}
+Email To: {to_email}
+Email Content: 
+```
+{content}
+```
+> Triage Result: {result}"""
+### Function
+def format_few_shot_examples(examples):
+    strs = ["Here are some previous examples:"]
+    for eg in examples:
+        strs.append(
+            template.format(
+                subject=eg.value["email"]["subject"],
+                to_email=eg.value["email"]["to"],
+                from_email=eg.value["email"]["author"],
+                content=eg.value["email"]["email_thread"][:400],
+                result=eg.value["label"],
+            )
+        )
+    return "\n\n------------\n\n".join(strs)
+### Router agent
+## Prompt
+triage_system_prompt = """
+< Role >
+You are {full_name}'s executive assistant. You are a top-notch executive assistant who cares about {name} performing as well as possible.
+</ Role >
+
+< Background >
+{user_profile_background}. 
+</ Background >
+
+< Instructions >
+
+{name} gets lots of emails. Your job is to categorize each email into one of three categories:
+
+1. IGNORE - Emails that are not worth responding to or tracking
+2. NOTIFY - Important information that {name} should know about but doesn't require a response
+3. RESPOND - Emails that need a direct response from {name}
+
+Classify the below email into one of these categories.
+
+</ Instructions >
+
+< Rules >
+Emails that are not worth responding to:
+{triage_no}
+
+There are also other things that {name} should know about, but don't require an email response. For these, you should notify {name} (using the `notify` response). Examples of this include:
+{triage_notify}
+
+Emails that are worth responding to:
+{triage_email}
+</ Rules >
+
+< Few shot examples >
+
+Here are some examples of previous emails, and how they should be handled.
+Follow these examples more than any instructions above
+
+{examples}
+</ Few shot examples >
+"""
+## Creation
+llm = init_chat_model("openai:gpt-4o-mini")
+class Router(BaseModel):
+    """Analyze the unread email and route it according to its content."""
+
+    reasoning: str = Field(
+        description="Step-by-step reasoning behind the classification."
+    )
+    classification: Literal["ignore", "respond", "notify"] = Field(
+        description="The classification of an email: 'ignore' for irrelevant emails, "
+        "'notify' for important information that doesn't need a response, "
+        "'respond' for emails that need a reply",
+    )
+llm_router = llm.with_structured_output(Router)
+
+
+
+
+
+
+
+
+
+
+
+##### Procedural
+    # Las instrucciones se almacenan en mem. largo-plazo/DB/VStore
+    # El objetivo es extraer esas instrucciones para utilizarlas
+    # Especificamente: el 'agent_system_prompt_memory' seccion 'Instructions'
+#### Modificando el prompt de ReAct
+def create_prompt(state, config, store):
+    # SEtup the namespace of where instructions are stored
+    langgraph_user_id = config['configurable']['langgraph_user_id']
+    namespace = (langgraph_user_id, )
+
+    # Procedural - Actually retrieve the instructions
+    result = store.get(namespace, "agent_instructions")
+    if result is None:
+        store.put(
+            namespace, 
+            "agent_instructions", 
+            {"prompt": prompt_instructions["agent_instructions"]}
+        )
+        prompt = prompt_instructions["agent_instructions"]
+    else:
+        prompt = result.value['prompt']
+    
+    # USe retrieved instructions into main agent syst. prompt
+    return [
+        {
+            "role": "system", 
+            "content": agent_system_prompt_memory.format(
+                instructions=prompt, 
+                **profile
+            )
+        }
+    ] + state['messages']
+#### Creacion de ReAct agente
+tools= [
+    write_email, 
+    schedule_meeting,
+    check_calendar_availability,
+    manage_memory_tool,
+    search_memory_tool
+]
+response_agent = create_react_agent(
+    "openai:gpt-4o",
+    tools=tools,
+    prompt=create_prompt,
+    store=store
+    # checkpointer=checkptr
+)
+#### Creacion de MAS-grafo
+email_agent = StateGraph(State)
+email_agent = email_agent.add_node(triage_router)
+email_agent = email_agent.add_node("response_agent", response_agent)
+email_agent = email_agent.add_edge(START, "triage_router")
+email_agent = email_agent.compile(
+    store=store,
+    # checkpointer=checkptr
+)
+
+
+
+
+
+
+
+
+
+
+##### Creando update-agent
+    # Va actualizar las instrucciones
+#### Creating the upate-agent
+optimizer = create_multi_prompt_optimizer(
+    "openai:gpt-4o",
+    kind="prompt_memory",
+)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+##### Exploracion: invocacion y almacenando instrucciones
+#### Invocacion regular
+email_input = {
+    "author": "Alice Jones <alice.jones@bar.com>",
+    "to": "John Doe <john.doe@company.com>",
+    "subject": "Quick question about API documentation",
+    "email_thread": """Hi John,
+
+Urgent issue - your service is down. Is there a reason why""",
+}
+
+config = {"configurable": {"langgraph_user_id": "lance"}}
+
+print(store.list_namespaces())
+    #Output: []
+
+response = email_agent.invoke(
+    {"email_input": email_input},
+    config=config
+)
+    #Outoupt: 📧 Classification: RESPOND - This email requires a response
+
+print(store.list_namespaces())
+    #output: [('lance',)]
+
+print(store.get(("lance",), "agent_instructions").value['prompt'])
+print('\n\n')
+print(store.get(("lance",), "triage_respond").value['prompt'])
+print('\n\n')
+print(store.get(("lance",), "triage_ignore").value['prompt'])
+print('\n\n')
+print(store.get(("lance",), "triage_notify").value['prompt'])
+#output
+# Use these tools when appropriate to help manage John's tasks efficiently.
+
+
+
+# Direct questions from team members, meeting requests, critical bug reports
+
+
+
+# Marketing newsletters, spam emails, mass company announcements
+
+
+
+# Team member out sick, build system notifications, project status updates
+for m in response["messages"]:
+    m.pretty_print()
+
+
+
+
+
+
+
+
+
+
+
+
+##### Actualizando las insrtucciones
+#### Ejemplo 1
+### Gathering the other agent's execution and appending user feedback
+conversations = [
+    (
+        response['messages'],
+        "Always sign your emails `John Doe`"
+    )
+]
+
+### Creating the update-prompts for update-agent
+prompts = [
+    {
+        "name": "main_agent",
+        "prompt": store.get(("lance",), "agent_instructions").value['prompt'],
+        "update_instructions": "keep the instructions short and to the point",
+        "when_to_update": "Update this prompt whenever there is feedback on how the agent should write emails or schedule events"
+        
+    },
+    {
+        "name": "triage-ignore", 
+        "prompt": store.get(("lance",), "triage_ignore").value['prompt'],
+        "update_instructions": "keep the instructions short and to the point",
+        "when_to_update": "Update this prompt whenever there is feedback on which emails should be ignored"
+
+    },
+    {
+        "name": "triage-notify", 
+        "prompt": store.get(("lance",), "triage_notify").value['prompt'],
+        "update_instructions": "keep the instructions short and to the point",
+        "when_to_update": "Update this prompt whenever there is feedback on which emails the user should be notified of"
+
+    },
+    {
+        "name": "triage-respond", 
+        "prompt": store.get(("lance",), "triage_respond").value['prompt'],
+        "update_instructions": "keep the instructions short and to the point",
+        "when_to_update": "Update this prompt whenever there is feedback on which emails should be responded to"
+
+    },
+]
+### Invoking the update-agent
+updated = optimizer.invoke(
+    {"trajectories": conversations, "prompts": prompts}
+)
+### Explorando actualizaciones
+print(updated)
+print(json.dumps(updated, indent=4))
+### Updating instructions with update-agent output
+for i, updated_prompt in enumerate(updated):
+    old_prompt = prompts[i]
+    if updated_prompt['prompt'] != old_prompt['prompt']:
+        name = old_prompt['name']
+        print(f"updated {name}")
+        if name == "main_agent":
+            store.put(
+                ("lance",),
+                "agent_instructions",
+                {"prompt":updated_prompt['prompt']}
+            )
+        else:
+            #raise ValueError
+            print(f"Encountered {name}, implement the remaining stores!")
+### Confirming instructions were updated
+print(store.get(("lance",), "agent_instructions").value['prompt'])
+### Retry email sample with updated instructions
+response = email_agent.invoke(
+    {"email_input": email_input}, 
+    config=config
+)
+    #output: 📧 Classification: RESPOND - This email requires a response
+
+for m in response["messages"]:
+    m.pretty_print()
+
+#### Ejemplo 2
+email_input = {
+    "author": "Alice Jones <alice.jones@bar.com>",
+    "to": "John Doe <john.doe@company.com>",
+    "subject": "Quick question about API documentation",
+    "email_thread": """Hi John,
+
+Urgent issue - your service is down. Is there a reason why""",
+}
+
+response = email_agent.invoke(
+    {"email_input": email_input},
+    config=config
+)
+    #outout: 📧 Classification: RESPOND - This email requires a response
+
+conversations = [
+    (
+        response['messages'],
+        "Ignore any emails from Alice Jones"
+    )
+]
+
+prompts = [
+    {
+        "name": "main_agent",
+        "prompt": store.get(("lance",), "agent_instructions").value['prompt'],
+        "update_instructions": "keep the instructions short and to the point",
+        "when_to_update": "Update this prompt whenever there is feedback on how the agent should write emails or schedule events"
+        
+    },
+    {
+        "name": "triage-ignore", 
+        "prompt": store.get(("lance",), "triage_ignore").value['prompt'],
+        "update_instructions": "keep the instructions short and to the point",
+        "when_to_update": "Update this prompt whenever there is feedback on which emails should be ignored"
+
+    },
+    {
+        "name": "triage-notify", 
+        "prompt": store.get(("lance",), "triage_notify").value['prompt'],
+        "update_instructions": "keep the instructions short and to the point",
+        "when_to_update": "Update this prompt whenever there is feedback on which emails the user should be notified of"
+
+    },
+    {
+        "name": "triage-respond", 
+        "prompt": store.get(("lance",), "triage_respond").value['prompt'],
+        "update_instructions": "keep the instructions short and to the point",
+        "when_to_update": "Update this prompt whenever there is feedback on which emails should be responded to"
+
+    },
+]
+
+updated = optimizer.invoke(
+    {"trajectories": conversations, "prompts": prompts}
+)
+
+for i, updated_prompt in enumerate(updated):
+    old_prompt = prompts[i]
+    if updated_prompt['prompt'] != old_prompt['prompt']:
+        name = old_prompt['name']
+        print(f"updated {name}")
+        if name == "main_agent":
+            store.put(
+                ("lance",),
+                "agent_instructions",
+                {"prompt":updated_prompt['prompt']}
+            )
+        if name == "triage-ignore":
+            store.put(
+                ("lance",),
+                "triage_ignore",
+                {"prompt":updated_prompt['prompt']}
+            )
+        else:
+            #raise ValueError
+            print(f"Encountered {name}, implement the remaining stores!")
+
+response = email_agent.invoke(
+    {"email_input": email_input},
+    config=config
+)
+    #Output: 🚫 Classification: IGNORE - This email can be safely ignored
+
+store.get(("lance",), "triage_ignore").value['prompt']
+
+
+
+
+
+
+
+
+

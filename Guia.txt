@@ -62,3 +62,27 @@ Secciones:
   - Modify a prev state to use in new thread
   - Exploring ".update_state.as_node" param.
 * Essay Writer
+
+--- C8 ---
+* Assistente Autonomo - Base
+  - Router agente
+  - Diferentes formas de ingenieria de prompt
+  - Pre-built ReAct agente
+  - MAS-grafo
+* Asistente Autonomo - Mem Semantica
+  - Creando in-mem persistence
+  - ReAct con in-mem persistence
+  - Invocando conversacion con in-mem persistence
+  - Explorando mem: corto- y largo- plazo
+  - Creando MAS-grafo con in-mem persistence ReAct
+* Semantic + Episodic Mem 
+  - Creando train data para episodic mem.
+  - Formateador para utilizar train data
+  - Creando router agente con episodic mem.
+  - Creando MAS- grafo con sem. + epi.
+* Sem. + Epi. + Procedural
+  - Semantic + Episodic
+  - Procedural
+  - Creando update-agent
+  - Exploracion: invocacion y almacenando instrucciones
+  - Actualizando las insrtucciones
