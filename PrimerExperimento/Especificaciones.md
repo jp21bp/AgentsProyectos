@@ -52,7 +52,7 @@ Concretamente:
 * LLM y recuperaciones fija
 * Recuperacion densa
 * Recuperacion grafica
-* Verificacion opcional
+* Recuperacion de verificacion (Opcional)
 * Adquisicion secuencial
 * Costo de adquisicion
 * Rango de respuesta correcta
@@ -101,6 +101,11 @@ Formalmente, dejemos:
 * $y_{t+1}$ = respuesta despues de adquisicion
 * $U(y)$ = utilidad de una respuesta
 * $C(a)$ = costo de adquisicion
+
+En este experimento existen 3 acciones de adquisiciones $a$:
+* Recuperacion densa
+* Recuperacion grafica
+* Recuperacion de verificacion (Opcional)
 
 Definimos:
 * Utilidad Marginal
@@ -317,6 +322,20 @@ Proposito de esta seleccion:
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 ## 6. Modelo
 
 El modelo seleccionada tendra las siguiente caracteristica:
@@ -337,6 +356,27 @@ Condiciones adicionales:
 * Se utiliza el mismo prompt dentro cada criterio
 * Lo unico que cambia entre criterios es la informacion que se provee a los modelos
     - Esto es esencial para interpretacion causal
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -444,18 +484,69 @@ Registrar los siguiente aspectos:
 * Nivel de correcto
 
 
-## 8. Cerrando Experimento
-### Objeto Clave
-EL objeto clave no es la respuesta final, es la **transicion** entre diferentes estados de evidencia $S$ al seleccionar una operacion de adquision/recuperacion $a$.
 
- $$
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+## 8. Evaluacion Experimental
+### Datos Coleccionados
+EL dato clave no es la respuesta final, es la **transicion** entre diferentes estados de evidencia $S$ al seleccionar una operacion de adquision/recuperacion $a$.
+
+$$
 S_t \rightarrow a \rightarrow S_{t+1}
 $$
 
 Para **cada** transicion, registramos:
 
 $$
-(q,S_t,a,S_{t+1},\Delta U,C)
+(q,S_t,a,S_{t+1},\Delta U(q,a),C)
 $$
+
+Esto crea un conjunto de datos que corresponde a **decisiones de adquisicion informatico**.
+
+### Clasificando datos
+
+Utilizando la metrica binaria de utilidad:
+* $\Delta U \in \{-1,0,+1\}$
+* Adquisicion que ayuda: $\Delta U=+1$
+* Adquisicion quneutral: $\Delta U=0$
+* Adquisicion que no ayuda: $\Delta U=-1$
+
+### Primeros resultados
+
+Dentro de cada categoria:
+* Complejidad de pregunta
+* Confianza de recuperacion
+* Grado de grafo
+* Cobertura de evidencia
+* Confianza de respuesta
+
+Se grafica:
+$$
+P(\Delta U=+1) = \frac{len(U=+1)}{len(U)}
+$$
+
+
+
+Objetivo: Se quiere identificar si **algunos estados** beneficiaron de adquisicion adicional
+* Resultado negativo: adquisicion adicional no le ayuda a ningun estado
+* Resultado debil: adquisicion adicional les ayuda a todos los estados
+* Resultado fuerte: existen algunos estados que se benefician de adquisicon adicional, mientras otros estados no
+    - En este caso, el siguiente paso es investigar las propiedades de los estados que puedan predecir un beneficio antes de ejecutar la adquisicion.
+
+
+
 
 
