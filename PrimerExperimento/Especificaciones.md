@@ -169,3 +169,50 @@ que puede predecir significativamente mejor que una base.
 
 
 
+
+
+
+
+
+
+
+
+
+## 4. 
+### Metrica de 'Utilidad'
+
+Metrica principal: dado una respuesta $y$ para una pregunta $Q$, la utilidad se puede medir en forma binaria dependiendo en que tan correcto este la respuesta:
+
+$$
+U(y) = 
+\begin{cases}
+1, \text{si la respuesta esta correcta} \\
+0, \text{si la respuesta no esta correcta}
+\end{cases}
+$$
+
+Metricas secundarias:
+* Respuesta exacta
+* F1
+* Correcion de evidencia/apoyo
+* Calibracion de confianza
+
+
+Si  $U_{pos}$ y $U_{pre}$ son las utilidades despues y antes de hacer una aduiqisicion, respetivamente, entonces:
+$$
+\Delta U = U_{pos} - U_{pre}
+$$
+
+Con la metrica binaria:
+
+| Antes | Despues | ΔU |
+| --- | --- | --- |
+| incorrecta | incorrecta | 0 |
+| incorrecta | correcta | +1 |
+| correcta | correcta | 0 |
+| correcta | incorrecta | -1 |
+
+
+
+
+
