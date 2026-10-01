@@ -74,7 +74,7 @@ Secciones:
 """
 #########################################################################
 #########################################################################
-### C6 ###
+### C6: LG Introduccion ###
 #########################################################################
 #########################################################################
     # Estilo Antiguo #
@@ -1298,7 +1298,7 @@ dashboard
 
 #########################################################################
 #########################################################################
-    ### C7 ###
+    ### C7: LG Agent State y Graphs ###
 #########################################################################
 #########################################################################
     # ReAct agente #
@@ -2970,7 +2970,7 @@ app.launch()
 
 #########################################################################
 #########################################################################
-### C8 ###
+### C8 : LG Memorias ###
 #########################################################################
 #########################################################################
     # Assistente Autonomo - Base #
@@ -4805,7 +4805,7 @@ store.get(("lance",), "triage_ignore").value['prompt']
 
 #########################################################################
 #########################################################################
-### C11 ###
+### C11: Pydantic  ###
 #########################################################################
 #########################################################################
     # Pydantic Basico #
@@ -5484,6 +5484,1234 @@ class SupportTicket(CustomerQuery):
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#########################################################################
+#########################################################################
+### C12: Smolagents ###
+#########################################################################
+#########################################################################
+    # Introduccion #
+import warnings
+warnings.filterwarnings("ignore")
+import os
+import io
+import IPython.display
+from PIL import Image
+import base64
+from dotenv import load_dotenv, find_dotenv
+_ = load_dotenv() # read local .env file
+from huggingface_hub import login
+login(os.environ['HF_API_KEY'])
+import pandas as pd
+import numpy as np
+from smolagents import tool
+from smolagents import HfApiModel, CodeAgent
+from helper import get_huggingface_token
+from smolagents import ToolCallingAgent
+
+
+
+##### Ejemplo manual
+#### Setup business problem:
+    # You own an ice cream compnay and a company truc
+    # You estiate to sell 30L of ice cream per day
+    # You will need raw ice cram
+    # You want to compare diff. options of daily delivery from suppliers
+#### Setup DF
+suppliers_data = {
+    "name": [
+        "Montreal Ice Cream Co",
+        "Brain Freeze Brothers",
+        "Toronto Gelato Ltd",
+        "Buffalo Scoops",
+        "Vermont Creamery",
+    ],
+    "location": [
+        "Montreal, QC",
+        "Burlington, VT",
+        "Toronto, ON",
+        "Buffalo, NY",
+        "Portland, ME",
+    ],
+    "distance_km": [120, 85, 400, 220, 280],
+    "canadian": [True, False, True, False, False],
+    "price_per_liter": [1.95, 1.91, 1.82, 2.43, 2.33],
+    "tasting_fee": [0, 12.50, 30.14, 42.00, 0.20],
+}
+data_description = """Suppliers have an additional tasting fee: that is a fixed fee applied to each order to taste the ice cream."""
+suppliers_df = pd.DataFrame(suppliers_data)
+#### Resolviendo
+def calculate_daily_supplier_price(row):
+    # Amount looking to buy
+    order_volume = 30
+
+    # Calculate raw product cost
+    product_cost = row["price_per_liter"] * order_volume
+
+    # Calculate transport cost
+    trucks_needed = np.ceil(order_volume / 300)
+        #Each truck can only carry 300L of icecream
+    cost_per_km = 1.20
+    transport_cost = row["distance_km"] * cost_per_km * trucks_needed
+
+    # Calculate tariffs for ice cream imported from Canada
+    tariff = product_cost * np.pi / 50 * row["canadian"]
+
+    # Get total cost
+    total_cost = product_cost + transport_cost + tariff + row["tasting_fee"]
+    return total_cost
+suppliers_df["daily_price"] = suppliers_df.apply(calculate_daily_supplier_price, axis=1)
+display(suppliers_df)
+
+
+
+
+
+
+##### Creando herramientas con decorador para code agent
+@tool
+def calculate_transport_cost(distance_km: float, order_volume: float) -> float:
+    """
+    Calculate transportation cost based on distance and order size.
+    Refrigerated transport costs $1.2 per kilometer and has a capacity of 300 liters.
+
+    Args:
+        distance_km: the distance in kilometers
+        order_volume: the order volume in liters
+    """
+    trucks_needed = np.ceil(order_volume / 300)
+    cost_per_km = 1.20
+    return distance_km * cost_per_km * trucks_needed
+
+
+@tool
+def calculate_tariff(base_cost: float, is_canadian: bool) -> float:
+    """
+    Calculates tariff for Canadian imports. Returns the tariff only, not the total cost.
+    Assumes tariff on dairy products from Canada is worth 2 * pi / 100, approx 6.2%
+
+    Args:
+        base_cost: the base cost of goods, not including transportation cost.
+        is_canadian: wether the import is from Canada.
+    """
+    if is_canadian:
+        return base_cost * np.pi / 50
+    return 0
+
+
+
+
+
+
+
+
+
+##### Resolviendo ejemplo con code agente
+#### Creando code agente
+model = HfApiModel(
+    "Qwen/Qwen2.5-72B-Instruct",
+    provider="together", # Choose a specific inference provider
+    max_tokens=4096,
+    temperature=0.1
+)
+agent = CodeAgent(
+    model=model,
+    tools=[calculate_transport_cost, calculate_tariff],
+    max_steps=10,
+    additional_authorized_imports=["pandas", "numpy"],
+    verbosity_level=2
+)
+#### Setting the verbosity of the execution
+agent.logger.level = 1 # Lower verbosity level
+#### Resolviendo
+agent.run(
+    """Can you get me the transportation cost for 50 liters
+    of ice cream over 10 kilometers?"""
+)
+#output:
+# ╭─────────────────────────── New run ────────────────────────────╮
+# │                                                                │
+# │ Can you get me the transportation cost for 50 liters           │
+# │     of ice cream over 10 kilometers?                           │
+# │                                                                │
+# ╰─ HfApiModel - Qwen/Qwen2.5-72B-Instruct ───────────────────────╯
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ Step 1 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+# Output message of the LLM: ───────────────────────────────────────
+# Thought: I will use the `calculate_transport_cost` tool to get the
+# transportation cost for 50 liters of ice cream over 10 kilometers.
+# Code:                                                             
+# ```py                                                             
+# transport_cost = calculate_transport_cost(distance_km=10,         
+# order_volume=50)                                                  
+# print(transport_cost)                                             
+# ```<end_code>                                                     
+
+#  ─ Executing parsed code: ─────────────────────────────────────── 
+#   transport_cost = calculate_transport_cost(distance_km=10,       
+#   order_volume=50)                                                
+#   print(transport_cost)                                           
+#  ──────────────────────────────────────────────────────────────── 
+
+# Execution logs:
+# 12.0
+
+# Out: None
+
+# [Step 1: Duration 0.18 seconds| Input tokens: 2,240 | Output 
+# tokens: 64]
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ Step 2 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+# Output message of the LLM: ───────────────────────────────────────
+# Thought: The transportation cost for 50 liters of ice cream over  
+# 10 kilometers is 12.0. I will return this as the final answer.    
+# Code:                                                             
+# ```py                                                             
+# final_answer(12.0)                                                
+# ```<end_code>                                                     
+
+#  ─ Executing parsed code: ─────────────────────────────────────── 
+#   final_answer(12.0)                                              
+#  ──────────────────────────────────────────────────────────────── 
+
+# Out - Final answer: 12.0
+
+# [Step 2: Duration 0.02 seconds| Input tokens: 4,638 | Output 
+# tokens: 116]
+
+# 12.0
+#### Otro ejemplo
+task = """Here is a dataframe of different ice cream suppliers.
+Could you give me a comparative table (as a dataframe) of the total
+daily price for getting daily ice cream delivery from each of them,
+given that we need exactly 30 liters of ice cream per day? Take
+into account transportation cost and tariffs.
+"""
+agent.run(
+    task,
+    additional_args={"suppliers_data": suppliers_df, "data_description": data_description},
+)
+    # Muestra el output de la corrida
+
+
+
+
+
+
+
+
+
+
+
+##### Resolviendo ejemplo con tool agente
+#### Creando tool agente
+model = HfApiModel(
+    "Qwen/Qwen2.5-72B-Instruct",
+    temperature=0.6
+)
+agent = ToolCallingAgent(
+    model=model,
+    tools=[calculate_transport_cost, calculate_tariff],
+    max_steps=20,
+)
+agent.logger.console.width=66
+#### Resolviendo 
+output = agent.run(
+    task,
+    additional_args={"suppliers_data": suppliers_df, "data_description": data_description},
+)
+print(output)
+    # output:
+    # Will give a 12 STEP s'ltn
+        # Not shown, bc DLAI was being bootlegged
+    # BUT this does show that tool-calling agent requires MORE steps
+        # More steps than code agent
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+####################################################################
+####################################################################
+    # Ejecutando Codigo Seguro #
+from smolagents.local_python_executor import LocalPythonExecutor
+import os
+from dotenv import load_dotenv
+load_dotenv()
+from smolagents import Tool
+from smolagents import CodeAgent, HfApiModel
+#### Download custom interpreter from web
+#!pip install git+https://github.com/huggingface/smolagents.git
+
+
+
+
+
+##### Regla 1: Orden no definida se ignora
+#### Creando ambiente
+custom_executor = LocalPythonExecutor(["numpy"])
+#### Create fcn to run commands in custom python interpreter
+def run_capture_exception(command: str):
+    try:
+        custom_executor(command)
+    except Exception as e:
+        print("ERROR:\n", e)
+#### Viendo regal 1 en accion
+harmful_command="!echo Bad command"
+run_capture_exception(harmful_command)
+    #output:
+    # ERROR:
+    # Code parsing failed on line 1 due to: SyntaxError
+    # !echo Bad command
+    # ^
+    # Error: invalid syntax (<unknown>, line 1)
+
+
+
+
+
+
+
+##### Regla 2: Importacion son seguras
+#### Setup imports allowed
+[
+    're',
+    'queue',
+    'random',
+    'statistics',
+    'unicodedata',
+    'itertools',
+    'math',
+    'stat',
+    'time',
+    'datetime',
+    'collections',
+    'numpy'
+]
+#### Ejecutando
+harmful_command="""
+import os
+exit_code = os.system("echo Bad command")
+"""
+run_capture_exception(harmful_command)
+    #otuput:
+    #ERROR:
+    #Code execution failed at line 'import os' due to: InterpreterError: Import of os is not allowed. Authorized imports are: ['numpy', 'statistics', 'queue', 'unicodedata', 're', 'itertools', 'time', 'datetime', 'random', 'collections', 'stat', 'math']
+#### Otro ejemplo
+harmful_command="""
+import random
+random._os.system('echo Bad command')
+"""
+run_capture_exception(harmful_command)
+    #output:
+    #ERROR:
+    #Code execution failed at line 'random._os.system('echo Bad command')' due to: InterpreterError: Forbidden access to module: os
+
+
+
+
+
+
+
+
+
+
+
+
+##### Regla 3: bucles infinitos se previenen
+harmful_command="""
+while True:
+    pass
+"""
+run_capture_exception(harmful_command)
+    #outpout:
+    # ERROR:
+    #  Code execution failed at line 'while True:
+    #     pass' due to: InterpreterError: Maximum number of 1000000 iterations in While loop exceeded
+
+
+
+
+
+
+
+
+
+
+
+
+
+##### Creando herramiento con Tool clase
+class VisitWebpageTool(Tool):
+    name = "visit_webpage"
+    description = (
+        "Visits a webpage at the given url and reads its content as a markdown string. Use this to browse webpages."
+    )
+    inputs = {
+        "url": {
+            "type": "string",
+            "description": "The url of the webpage to visit.",
+        }
+    }
+    output_type = "string"
+
+    def __init__(self, max_output_length: int = 40000):
+        super().__init__()
+        self.max_output_length = max_output_length
+
+    def forward(self, url: str) -> str:
+        try:
+            import re
+
+            import requests
+            from markdownify import markdownify
+            from requests.exceptions import RequestException
+
+            from smolagents.utils import truncate_content
+        except ImportError as e:
+            raise ImportError(
+                "You must install packages `markdownify` and `requests` to run this tool: for instance run `pip install markdownify requests`."
+            ) from e
+        try:
+            response = requests.get(url, timeout=20)
+            response.raise_for_status()  # Raise an exception for bad status codes
+            markdown_content = markdownify(response.text).strip()
+            markdown_content = re.sub(r"\n{3,}", "\n\n", markdown_content)
+            return truncate_content(markdown_content, self.max_output_length)
+
+        except requests.exceptions.Timeout:
+            return "The request timed out. Please try again later or check the URL."
+        except RequestException as e:
+            return f"Error fetching the webpage: {str(e)}"
+        except Exception as e:
+            return f"An unexpected error occurred: {str(e)}"
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+##### Utilizado un sandbox
+#### Get E2B API key
+import os
+from dotenv import load_dotenv
+load_dotenv()
+
+E2B_API_KEY = os.getenv("E2B_API_KEY")
+
+#### Creando code agente
+model = HfApiModel()
+agent = CodeAgent(
+    tools=[VisitWebpageTool()],
+    model=model,
+    executor_type="e2b",
+    executor_kwargs={"api_key": E2B_API_KEY},
+    max_steps=5
+)
+
+#### Execute the agent in the sandbox
+output = agent.run(
+    "Give me one of the top github repos from organization huggingface."
+)
+print("E2B executor result:", output)
+    #Output:
+    # DLAI generates an error
+        #But ideally it would show final response after code actions
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+################################################################
+################################################################
+    # Monitoreando y Evaluando Code Agentes #
+import os
+from dotenv import load_dotenv, find_dotenv
+from phoenix.otel import register
+from openinference.instrumentation.smolagents import SmolagentsInstrumentor
+
+from dotenv import load_dotenv, find_dotenv
+load_dotenv() # load variables from local .env file
+
+from huggingface_hub import login
+
+login(os.getenv('HF_API_KEY'))
+
+from smolagents import HfApiModel
+from smolagents import CodeAgent
+from smolagents import tool
+from typing import Dict
+import phoenix as px
+import pandas as pd
+import json
+
+
+
+
+
+
+
+##### Setup tracing
+tracer_provider = register(
+    project_name=PROJECT_NAME,
+    #endpoint= get_phoenix_endpoint() + "v1/traces"
+    endpoint = os.getenv('DLAI_LOCAL_URL').format(port='6006') + "v1/traces"
+)
+SmolagentsInstrumentor().instrument(tracer_provider=tracer_provider)
+
+
+
+
+
+
+
+
+##### Agente con tracer
+#### Utilizando modelo basico
+model=HfApiModel("Qwen/Qwen2.5-Coder-32B-Instruct", provider="together")
+state = model([{"role": "user", "content": "Hello!"}])
+print(state)
+    #Output:
+    # ChatMessage(role=<MessageRole.ASSISTANT: 'assistant'>, 
+            #content='Hello! How can I assist you today?', 
+            #tool_calls=[], raw=ChatCompletionOutput(choices=
+            #[ChatCompletionOutputComplete(finish_reason='stop', 
+            #index=0, message=ChatCompletionOutputMessage(role=
+            #'assistant', content='Hello! How can I assist you 
+            # today?', tool_call_id=None, tool_calls=[]), logprobs=
+            # None, seed=7461767120405429000)], created=1761720943, 
+            # id='oH6FL8m-62bZhn-9960c4d9e85fd6e4', model=
+            # 'Qwen/Qwen2.5-Coder-32B-Instruct', system_fingerprint=
+            # None, usage=ChatCompletionOutputUsage(completion_tokens=
+            # 10, prompt_tokens=31, total_tokens=41, cached_tokens=0),
+            # object='chat.completion', prompt=[]))
+for attr in dir(state):
+    if attr.startswith("_"): continue
+    print(attr)
+    print(state.__getattribute__(attr))
+    print('\n\n')
+#### Utilizando code agente
+agent = CodeAgent(model=model, tools=[])
+
+### Executing the code agent
+agent.run("What is the 100th Fibonacci number?")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+##### Snapshots en problema real
+#### Problema
+    # Implement pre-order so ppl can order ahead of time
+#### Setup
+menu_prices = {"crepe nutella": 1.50, "vanilla ice cream": 2, "maple pancake": 1.}
+ORDER_BOOK = {}
+#### Herramientas 
+@tool
+def place_order(quantities: Dict[str, int], session_id: int) -> None:
+    """Places a pre-order of snacks.
+
+    Args:
+        quantities: a dictionary with names as keys and quantities as values
+        session_id: the id for the client session
+    """
+    global ORDER_BOOK
+    assert isinstance(quantities, dict), "Incorrect type for the input dictionary!"
+    assert [key in menu_prices for key in quantities.keys()], f"All food names should be within {menu_prices.keys()}"+
+        #CHecks that all possible orders are in the menu to begin with
+    ORDER_BOOK[session_id] = quantities
+
+@tool
+def get_prices(quantities: Dict[str, int]) -> str:
+    """Gets price for certain quantities of ice cream.
+
+    Args:
+        quantities: a dictionary with names as keys and quantities as values
+    """
+    assert isinstance(quantities, dict), "Incorrect type for the input dictionary!"
+    assert [key in menu_prices for key in quantities.keys()], f"All food names should be within {menu_prices.keys()}"
+    total_price = sum([menu_prices[key] * value for key, value in quantities.items()])
+    return (
+        f"Given the current menu prices:\n{menu_prices}\nThe total price for your order would be: ${total_price}"
+    )
+#### Code agente
+order_agent = CodeAgent(
+    tools=[place_order, get_prices],
+    model=HfApiModel("Qwen/Qwen2.5-Coder-32B-Instruct", provider="together")
+)
+order_agent.run(
+    "Could I come and collect one crepe nutella?",
+    additional_args={"session_id": 192}
+)
+    # Output largo
+#### Stress test con multiple ordenes
+client_requests = [
+    ("Could I come and collect one crepe nutella?", "place_order"),
+    ("What would be the price for 1 crêpe nutella + 2 pancakes?", "get_prices"),
+    ("How did you start your ice-cream business?", None),
+    ("What's the weather at the Louvre right now?", None),
+    ("I'm not sure if I should order. I want a vanilla ice cream. but if it's more expensive than $1, I don't want it. If it's below, I'll order it, please.", "place_order")
+]
+
+for request in client_requests:
+    order_agent.run(
+        request[0],
+        additional_args={"session_id": 0, "menu_prices": menu_prices}
+    )
+    # output largo
+#### Snapshot historia
+spans = px.Client().get_spans_dataframe(project_name=PROJECT_NAME)
+spans.head(20)
+# #Output:
+#  	name 	span_kind 	parent_id 	start_time 	end_time 	status_code 	status_message 	events 	context.span_id 	context.trace_id 	... 	attributes.output.mime_type 	attributes.llm.input_messages 	attributes.output.value 	attributes.input.mime_type 	attributes.llm.token_count.completion 	attributes.llm.token_count.prompt 	attributes.llm.output_messages 	attributes.llm.model_name 	attributes.llm.invocation_parameters 	attributes.smolagents
+# context.span_id 																					
+# 6a25c8a6b735688e 	FinalAnswerTool 	TOOL 	b22c820332afa550 	2025-11-02 20:09:59.682636+00:00 	2025-11-02 20:09:59.682711+00:00 	OK 		[] 	6a25c8a6b735688e 	d67d5634a910d8f0aa0f4da86a67dd8c 	... 	None 	None 	None 	None 	NaN 	NaN 	None 	None 	None 	None
+# 88d98501d70b256c 	HfApiModel.__call__ 	LLM 	b22c820332afa550 	2025-11-02 20:09:59.616453+00:00 	2025-11-02 20:09:59.631016+00:00 	OK 		[] 	88d98501d70b256c 	d67d5634a910d8f0aa0f4da86a67dd8c 	... 	application/json 	[{'message.role': 'system', 'message.content':... 	{"role": "assistant", "content": "Thought: The... 	application/json 	49.0 	2463.0 	[{'message.role': 'assistant', 'message.conten... 	Qwen/Qwen2.5-Coder-32B-Instruct 	{} 	None
+# b22c820332afa550 	Step 2 	CHAIN 	77383dbf7313a3d0 	2025-11-02 20:09:59.616172+00:00 	2025-11-02 20:09:59.721497+00:00 	OK 		[] 	b22c820332afa550 	d67d5634a910d8f0aa0f4da86a67dd8c 	... 	None 	None 	Execution logs:\nLast output from code snippet... 	None 	NaN 	NaN 	None 	None 	None 	None
+# 315397d39a339e32 	HfApiModel.__call__ 	LLM 	de4d79783e22a263 	2025-11-02 20:09:59.512422+00:00 	2025-11-02 20:09:59.526977+00:00 	OK 		[] 	315397d39a339e32 	d67d5634a910d8f0aa0f4da86a67dd8c 	... 	application/json 	[{'message.role': 'system', 'message.content':... 	{"role": "assistant", "content": "Thought: I n... 	application/json 	89.0 	2260.0 	[{'message.role': 'assistant', 'message.conten... 	Qwen/Qwen2.5-Coder-32B-Instruct 	{} 	None
+# de4d79783e22a263 	Step 1 	CHAIN 	77383dbf7313a3d0 	2025-11-02 20:09:59.512206+00:00 	2025-11-02 20:09:59.571788+00:00 	OK 		[] 	de4d79783e22a263 	d67d5634a910d8f0aa0f4da86a67dd8c 	... 	None 	None 	Execution logs:\nThe price of vanilla ice crea... 	None 	NaN 	NaN 	None 	None 	None 	None
+# 77383dbf7313a3d0 	CodeAgent.run 	AGENT 	None 	2025-11-02 20:09:59.506148+00:00 	2025-11-02 20:09:59.760285+00:00 	OK 		[] 	77383dbf7313a3d0 	d67d5634a910d8f0aa0f4da86a67dd8c 	... 	None 	None 	I will not order the vanilla ice cream. 	None 	138.0 	4723.0 	None 	None 	None 	{'additional_args': '{"session_id": 0, "menu_p...
+# abe9f007a13296c6 	FinalAnswerTool 	TOOL 	2317eb3ad2a6ab6a 	2025-11-02 20:09:59.389365+00:00 	2025-11-02 20:09:59.389426+00:00 	OK 		[] 	abe9f007a13296c6 	26b6cf21fd8c7e051e1a2ed6dbe4966c 	... 	None 	None 	None 	None 	NaN 	NaN 	None 	None 	None 	None
+# c3eebb1a9de9f2a6 	HfApiModel.__call__ 	LLM 	2317eb3ad2a6ab6a 	2025-11-02 20:09:59.332995+00:00 	2025-11-02 20:09:59.345830+00:00 	OK 		[] 	c3eebb1a9de9f2a6 	26b6cf21fd8c7e051e1a2ed6dbe4966c 	... 	application/json 	[{'message.role': 'system', 'message.content':... 	{"role": "assistant", "content": "Thought: The... 	application/json 	63.0 	2771.0 	[{'message.role': 'assistant', 'message.conten... 	Qwen/Qwen2.5-Coder-32B-Instruct 	{} 	None
+# 2317eb3ad2a6ab6a 	Step 3 	CHAIN 	52bb4a4b79fbb07e 	2025-11-02 20:09:59.332704+00:00 	2025-11-02 20:09:59.429186+00:00 	OK 		[] 	2317eb3ad2a6ab6a 	26b6cf21fd8c7e051e1a2ed6dbe4966c 	... 	None 	None 	Execution logs:\nLast output from code snippet... 	None 	NaN 	NaN 	None 	None 	None 	None
+# 64f5f8dcddc572f5 	HfApiModel.__call__ 	LLM 	0fa7b88d963155de 	2025-11-02 20:09:59.232883+00:00 	2025-11-02 20:09:59.247143+00:00 	OK 		[] 	64f5f8dcddc572f5 	26b6cf21fd8c7e051e1a2ed6dbe4966c 	... 	application/json 	[{'message.role': 'system', 'message.content':... 	{"role": "assistant", "content": "Thought: Sin... 	application/json 	145.0 	2442.0 	[{'message.role': 'assistant', 'message.conten... 	Qwen/Qwen2.5-Coder-32B-Instruct 	{} 	None
+# 0fa7b88d963155de 	Step 2 	CHAIN 	52bb4a4b79fbb07e 	2025-11-02 20:09:59.232626+00:00 	2025-11-02 20:09:59.290917+00:00 	OK 		[] 	0fa7b88d963155de 	26b6cf21fd8c7e051e1a2ed6dbe4966c 	... 	None 	None 	Execution logs:\n{'location': 'Louvre, Paris, ... 	None 	NaN 	NaN 	None 	None 	None 	None
+# c37b2ad8c0d1aec2 	HfApiModel.__call__ 	LLM 	581e7c8539dc2f19 	2025-11-02 20:09:59.130520+00:00 	2025-11-02 20:09:59.144362+00:00 	OK 		[] 	c37b2ad8c0d1aec2 	26b6cf21fd8c7e051e1a2ed6dbe4966c 	... 	application/json 	[{'message.role': 'system', 'message.content':... 	{"role": "assistant", "content": "Thought: To ... 	application/json 	63.0 	2227.0 	[{'message.role': 'assistant', 'message.conten... 	Qwen/Qwen2.5-Coder-32B-Instruct 	{} 	None
+# 581e7c8539dc2f19 	Step 1 	CHAIN 	52bb4a4b79fbb07e 	2025-11-02 20:09:59.130298+00:00 	2025-11-02 20:09:59.192000+00:00 	ERROR 	AgentExecutionError: Code execution failed at ... 	[{'name': 'exception', 'timestamp': '2025-11-0... 	581e7c8539dc2f19 	26b6cf21fd8c7e051e1a2ed6dbe4966c 	... 	None 	None 	None 	None 	NaN 	NaN 	None 	None 	None 	None
+# 52bb4a4b79fbb07e 	CodeAgent.run 	AGENT 	None 	2025-11-02 20:09:59.124809+00:00 	2025-11-02 20:09:59.467323+00:00 	OK 		[] 	52bb4a4b79fbb07e 	26b6cf21fd8c7e051e1a2ed6dbe4966c 	... 	None 	None 	Sunny 	None 	271.0 	7440.0 	None 	None 	None 	{'additional_args': '{"session_id": 0, "menu_p...
+# 7916517d145e0259 	FinalAnswerTool 	TOOL 	870837ee2d7c1a6d 	2025-11-02 20:09:58.965668+00:00 	2025-11-02 20:09:58.965727+00:00 	OK 		[] 	7916517d145e0259 	419541b041f41e8640446a1dbf0a4d0c 	... 	None 	None 	None 	None 	NaN 	NaN 	None 	None 	None 	None
+# ebb2cee0e282d8aa 	HfApiModel.__call__ 	LLM 	870837ee2d7c1a6d 	2025-11-02 20:09:58.909970+00:00 	2025-11-02 20:09:58.922308+00:00 	OK 		[] 	ebb2cee0e282d8aa 	419541b041f41e8640446a1dbf0a4d0c 	... 	application/json 	[{'message.role': 'system', 'message.content':... 	{"role": "assistant", "content": "Thought: Now... 	application/json 	200.0 	2527.0 	[{'message.role': 'assistant', 'message.conten... 	Qwen/Qwen2.5-Coder-32B-Instruct 	{} 	None
+# 870837ee2d7c1a6d 	Step 2 	CHAIN 	6370ace97b064a3c 	2025-11-02 20:09:58.909713+00:00 	2025-11-02 20:09:59.011449+00:00 	OK 		[] 	870837ee2d7c1a6d 	419541b041f41e8640446a1dbf0a4d0c 	... 	None 	None 	Execution logs:\nLast output from code snippet... 	None 	NaN 	NaN 	None 	None 	None 	None
+# 7faf2b2f87da8e77 	SimpleTool 	TOOL 	7ce1b2a454ac22a0 	2025-11-02 20:09:58.831892+00:00 	2025-11-02 20:09:58.831977+00:00 	OK 		[] 	7faf2b2f87da8e77 	419541b041f41e8640446a1dbf0a4d0c 	... 	text/plain 	None 	Given the current menu prices:\n{'crepe nutell... 	None 	NaN 	NaN 	None 	None 	None 	None
+# 7f9f7c0d0be62b70 	HfApiModel.__call__ 	LLM 	7ce1b2a454ac22a0 	2025-11-02 20:09:58.757710+00:00 	2025-11-02 20:09:58.772375+00:00 	OK 		[] 	7f9f7c0d0be62b70 	419541b041f41e8640446a1dbf0a4d0c 	... 	application/json 	[{'message.role': 'system', 'message.content':... 	{"role": "assistant", "content": "Thought: To ... 	application/json 	133.0 	2226.0 	[{'message.role': 'assistant', 'message.conten... 	Qwen/Qwen2.5-Coder-32B-Instruct 	{} 	None
+# 7ce1b2a454ac22a0 	Step 1 	CHAIN 	6370ace97b064a3c 	2025-11-02 20:09:58.757447+00:00 	2025-11-02 2
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+##### Transformando snapshot en DF
+target = spans['span_kind'] == 'AGENT'
+agents = spans[spans['span_kind'] == 'AGENT'].copy()
+target2 = agents['attributes.input.value']
+print(type(target2))
+    #output: <class 'pandas.core.series.Series'>
+        # dataframe version of a list
+print(target2)
+    #Although not shown, the elements are JSON-strings
+        #I.e, they follow a JSON pattern, but they're still strings
+#output:
+# context.span_id
+# 81a2708024b1c4e4    {"task": "What's the weather at the Louvre rig...
+# d840f9477a9fd681    {"task": "How did you start your ice-cream bus...
+# 8033822222f9accb    {"task": "What would be the price for 1 crêpe ...
+# 4ff3f19f2cdded8a    {"task": "Could I come and collect one crepe n...
+# b16eb22c7f836f75    {"task": "Could I come and collect one crepe n...
+# 8521eff28073371d    {"task": "What is the 100th Fibonacci numbe
+
+agents['task'] = agents['attributes.input.value'].apply(
+    lambda x: json.loads(x).get('task') if isinstance(x, str) else None
+)
+    # Analyzing "agents['attributes.input.value']":
+        # "attributes.input.value" is a KEY of the dataframe
+        # Thus, this will return a LIST of diff. elements
+            # REcall: "len(list)" = number of rows in dataframe
+            # Specifically "list[N+1]" = the "attributes.input.value" of the Nth row
+    # Although not shown, the elements of this list are STRINGS
+        # These strings are JSON-strings
+            # IN other words, they follow a JSON format 
+                #But in the end, they're still strings
+    # Lambda fcn breakdown:
+        #"x" = an INDIVIDUAL element of the list
+            # list from "agents['attributes.input.value']"
+        # "isinstance(x, str)" = checks that "x" is a string
+        #"json.loads(x)" = turns the string "x" into a JSON OBJECT
+            #This is useful when you're tying to use JSON tools
+        #"json.loads(x).get(task)" = gets the "task" of the JSON object
+            # ".get()" is a JSON tool
+target3 = spans.loc[spans['span_kind'] == 'TOOL',["attributes.tool.name"]]
+print(type(target3))
+    #output: <class 'pandas.core.frame.DataFrame'>
+        # I.e., it's a DICTIONARY
+    #Note the use of "dataframe.loc"
+print(target3)
+#output:
+#                  attributes.tool.name
+# context.span_id                      
+# 9802468065adca4d         final_answer
+# a5767963b7de5be7         final_answer
+# 7569f9ae7f730c56         final_answer
+# aed996e7c6d02810           get_prices
+# 5c4d63da02c2daa0         final_answer
+# 99716086ef9940a4           get_prices
+# 2b1f88a2d6175f45         final_answer
+# 0e6dbfcca1001aed          place_order
+# 6b6b8ef272c92aa4         final_answer
+tools = spans.loc[
+    spans['span_kind'] == 'TOOL',
+    ["attributes.tool.name", "attributes.input.value", "context.trace_id"]
+].copy()
+
+
+target4 = agents[["name", "start_time"]]
+print(type(target4))
+    #output: <class 'pandas.core.frame.DataFrame'>
+print(target4)
+#output:
+#                            name                       start_time
+# context.span_id                                                 
+# 94a5e2ee96d0fa14  CodeAgent.run 2025-11-02 21:52:24.409146+00:00
+# 697f4b16158337e3  CodeAgent.run 2025-11-02 21:52:24.110204+00:00
+# 9e3e243a0a49d28c  CodeAgent.run 2025-11-02 21:52:23.847353+00:00
+# 93e4c4dfaaa5be94  CodeAgent.run 2025-11-02 21:52:23.574202+00:00
+# 7d695e218d0321ab  CodeAgent.run 2025-11-02 21:52:23.372159+00:00
+# 46c5533938b7103f  CodeAgent.run 2025-11-02 21:52:23.146653+00:00
+# 8080fc9e5bd1d00f  CodeAgent.run 2025-11-02 21:52:22.954932+00:00
+# e87f9969d5dc4e41  CodeAgent.run 2025-11-02 21:38:16.215468+00:00
+# 81a2708024b1c4e4  CodeAgent.run 2025-11-02 21:38:15.883193+00:00
+
+
+tools_per_task = agents[
+    ["name", "start_time", "task", "context.trace_id"]
+].merge(
+    tools,
+    on="context.trace_id",
+    how="left",
+)
+    #Unites TWO diff dataframes
+
+tools_per_task.head()
+#output
+# name 	start_time 	task 	context.trace_id 	attributes.tool.name 	attributes.input.value
+# 0 	CodeAgent.run 	2025-11-03 20:20:54.066289+00:00 	I'm not sure if I should order. I want a vanil... 	bd89a2d153a084ac3c992f3e1085b3a7 	final_answer 	{"args": ["I will not order the vanilla ice cr...
+# 1 	CodeAgent.run 	2025-11-03 20:20:53.716546+00:00 	What's the weather at the Louvre right now? 	32efe5a2ecd7cce99252011552b2bf81 	final_answer 	{"args": ["Sunny"], "sanitize_inputs_outputs":...
+# 2 	CodeAgent.run 	2025-11-03 20:20:53.426181+00:00 	How did you start your ice-cream business? 	2b5f2cf7c90daf8408f5ae22ab972360 	final_answer 	{"args": ["I started my ice-cream business wit...
+# 3 	CodeAgent.run 	2025-11-03 20:20:53.426181+00:00 	How did you start your ice-cream business? 	2b5f2cf7c90daf8408f5ae22ab972360 	get_prices 	{"args": [], "sanitize_inputs_outputs": false,...
+# 4 	CodeAgent.run 	2025-11-03 20:20:53.127735+00:00 	What would be the price for 1 crêpe nutella + ... 	37c31f71c1a4d8e15e14b8f513c921e8 	
+
+
+
+
+
+
+
+
+
+
+
+
+
+##### Evaluando el agente
+#### Create a boolean fcn to see if used tool matches expected tool
+def score_request(expected_tool: str, tool_calls: list) -> bool:
+    if expected_tool is None:
+        return tool_calls == set(["final_answer"])
+    else:
+        return expected_tool in tool_calls
+
+
+#### Checking whether the used tool was the expected tool
+results = []
+for i, (request, expected_tool) in enumerate(client_requests):
+    tool_calls = set(tools_per_task.loc[tools_per_task["task"] == request, "attributes.tool.name"].tolist())
+    target = tools_per_task.loc[tools_per_task["task"] == request, "attributes.tool.name"].tolist()
+   
+    print(f"Request number: {i}")
+    print(f"Request: {request}")
+    print(f"Tools used (list form): {target}")
+    print(f"Expected tools: {expected_tool}")
+    print('\n\n')
+    
+    results.append(
+        {
+            "request": request,
+            "tool_calls_performed": tool_calls,
+            "is_correct": score_request(expected_tool, tool_calls)
+        }
+    )
+#Output:
+# Request number: 0
+# Request: Could I come and collect one crepe nutella?
+# Tools used (list form): ['final_answer', 'place_order', 'final_answer', 'place_order', 'final_answer', 'place_order', 'final_answer', 'place_order']
+# Expected tools: place_order
+
+
+
+# Request number: 1
+# Request: What would be the price for 1 crêpe nutella + 2 pancakes?
+# Tools used (list form): ['final_answer', 'get_prices', 'final_answer', 'get_prices']
+# Expected tools: get_prices
+
+
+
+# Request number: 2
+# Request: How did you start your ice-cream business?
+# Tools used (list form): ['final_answer', 'get_prices', 'final_answer', 'get_prices']
+# Expected tools: None
+
+
+
+# Request number: 3
+# Request: What's the weather at the Louvre right now?
+# Tools used (list form): ['final_answer', 'final_answer']
+# Expected tools: None
+
+
+
+# Request number: 4
+# Request: I'm not sure if I should order. I want a vanilla ice cream. but if it's more expensive than $1, I don't want it. If it's below, I'll order it, please.
+# Tools used (list form): ['final_answer', 'final_answer']
+# Expected tools: place_order
+
+#### Printing out final code agent evaluation
+    # This  will be a dataframe
+print(pd.DataFrame(results))
+#outout:
+#     request 	tool_calls_performed 	is_correct
+# 0 	Could I come and collect one crepe nutella? 	{final_answer, place_order} 	True
+# 1 	What would be the price for 1 crêpe nutella + ... 	{get_prices, final_answer} 	True
+# 2 	How did you start your ice-cream business? 	{get_prices, final_answer} 	False
+# 3 	What's the weather at the Louvre right now? 	{final_answer} 	True
+# 4 	I'm not sure if I should order. I want a vanil... 	{final_answer} 	False
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+####################################################################
+####################################################################
+    # Creando Deep Research Agente #
+from tavily import TavilyClient
+from smolagents import tool, Tool
+import os
+from dotenv import load_dotenv
+load_dotenv(override=True) # load variables from local .env file
+
+from PIL import Image
+
+from smolagents import CodeAgent, OpenAIServerModel
+
+from huggingface_hub import login
+import pandas as pd
+from smolagents import Tool
+from typing import Any
+from smolagents.utils import make_image_url, encode_image_base64
+import os
+
+
+
+##### Creando variedad de herramientas
+#### using "@tool" decorator
+@tool
+def web_search(query: str) -> str:
+    """Searches the web for your query.
+
+    Args:
+        query: Your query
+    """
+    tavily_client = TavilyClient(api_key=os.getenv("TAVILY_API_KEY"))
+    response = tavily_client.search(query)
+    # return str(response["results"])   #YOu might need this one
+    return response["results"]          # OR you might need this one
+
+#### Using "Tool" parent class
+class VisitWebpageTool(Tool):
+    name = "visit_webpage"
+    description = (
+        "Visits a webpage at the given url and reads its content as a markdown string. Use this to browse webpages."
+    )
+    inputs = {
+        "url": {
+            "type": "string",
+            "description": "The url of the webpage to visit.",
+        }
+    }
+    output_type = "string"
+
+    def forward(self, url: str) -> str:
+        try:
+            import re
+
+            import requests
+            from markdownify import markdownify
+            from requests.exceptions import RequestException
+
+            from smolagents.utils import truncate_content
+        except ImportError as e:
+            raise ImportError(
+                "You must install packages `markdownify` and `requests` to run this tool: for instance run `pip install markdownify requests`."
+            ) from e
+        try:
+            response = requests.get(url, timeout=20)
+            response.raise_for_status()  # Raise an exception for bad status codes
+            markdown_content = markdownify(response.text).strip()
+            markdown_content = re.sub(r"\n{3,}", "\n\n", markdown_content)
+            return truncate_content(markdown_content, 40000)
+
+        except requests.exceptions.Timeout:
+            return "The request timed out. Please try again later or check the URL."
+        except RequestException as e:
+            return f"Error fetching the webpage: {str(e)}"
+        except Exception as e:
+            return f"An unexpected error occurred: {str(e)}"
+
+
+
+
+
+
+
+##### Ejemplo
+#### Tarea
+request_museums = """
+Could you give me a sorted list of the top 3 museums in the world in 2024,
+along with their visitor count (in millions) that year, and the approximate daily temperature
+in July at their location ?"""
+#### Creando agente
+code_model = "gpt-4.1-mini"
+
+model = OpenAIServerModel(
+    #"gpt-4o",
+    code_model,  #updated model
+    max_completion_tokens=8096,
+)
+
+agent = CodeAgent(
+    model=model,
+    tools=[web_search, VisitWebpageTool()],
+    max_steps=10
+)
+agent.logger.console.width=66
+#### Ejecucion
+result = agent.run(request_museums)
+#### Transformando resultado en DF
+try:
+    display(pd.DataFrame(result))
+except Exception as e:
+    print("Could not display as DataFrame:", e)
+    print(result)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+##### Multi-agente researcher: researcher y manager
+#### Creating a web search code agent
+web_agent = CodeAgent(
+    model=OpenAIServerModel(
+        #"gpt-4o",
+        code_model,  # updated model
+        max_completion_tokens=8096,
+    ),
+    tools=[web_search, VisitWebpageTool()],
+    max_steps=10,
+    name="web_agent",
+    description="Runs web searches for you."
+)
+web_agent.logger.console.width=66
+#### Creando manager code agent
+### Funcion para revisar subagentes
+def check_reasoning_and_plot(final_answer, agent_memory):
+    final_answer
+    multimodal_model = OpenAIServerModel(
+        "gpt-4o",
+    )
+    filepath = "saved_map.png"
+    assert os.path.exists(filepath), "Make sure to save the plot under saved_map.png!"
+    image = Image.open(filepath)
+    prompt = (
+        f"Here is a user-given task and the agent steps: {agent_memory.get_succinct_steps()}. Now here is the plot that was made."
+        "Please check that the reasoning process and plot are correct: do they correctly answer the given task?"
+        "First list reasons why yes/no, then write your final decision: PASS in caps lock if it is satisfactory, FAIL if it is not."
+        "Don't be harsh: if the plot mostly solves the task, it should pass."
+        "To pass, a plot should be made using px.scatter_map and not any other method (scatter_map looks nicer)."
+        "Also, any run that invents numbers should fail."
+    )
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": prompt,
+                },
+                {
+                    "type": "image_url",
+                    "image_url": {"url": make_image_url(encode_image_base64(image))},
+                },
+            ],
+        }
+    ]
+    output = multimodal_model(messages).content
+    print("Feedback: ", output)
+    if "FAIL" in output:
+        raise Exception(output)
+    return True
+### Creando el manager code agente
+manager_agent = CodeAgent(
+    model=OpenAIServerModel(
+        #"gpt-4o",
+        code_model,
+        max_tokens=8096,
+    ),
+    tools=[],
+    managed_agents=[web_agent],
+    additional_authorized_imports=[
+        "geopandas",
+        "plotly",
+        "plotly.express",  #added
+        "plotly.express.colors",  #added
+        "shapely",
+        "json",
+        "pandas",
+        "numpy",
+    ],
+    planning_interval=5,
+    verbosity_level=2,
+    final_answer_checks=[check_reasoning_and_plot],
+    max_steps=15,
+)
+manager_agent.logger.console.width=66
+### VIsualizing the created manager agent
+manager_agent.visualize()
+#output
+# CodeAgent | gpt-4.1-mini
+# ├── ✅ Authorized imports: ['geopandas', 'plotly', 
+# │   'plotly.express', 'plotly.express.colors', 'shapely', 'json', 
+# │   'pandas', 'numpy']
+# ├── 🛠️ Tools:
+# │   ┏━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━┓
+# │   ┃ Name         ┃ Description          ┃ Arguments            ┃
+# │   ┡━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━┩
+# │   │ final_answer │ Provides a final     │ answer (`any`): The  │
+# │   │              │ answer to the given  │ final answer to the  │
+# │   │              │ problem.             │ problem              │
+# │   └──────────────┴──────────────────────┴──────────────────────┘
+# └── 🤖 Managed agents:
+#     └── web_agent | CodeAgent | gpt-4.1-mini
+#         ├── ✅ Authorized imports: []
+#         ├── 📝 Description: Runs web searches for you.
+#         └── 🛠️ Tools:
+#             ┏━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━┓
+#             ┃ Name          ┃ Description      ┃ Arguments       ┃
+#             ┡━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━┩
+#             │ web_search    │ Searches the web │ query           │
+#             │               │ for your query.  │ (`string`):     │
+#             │               │                  │ Your query      │
+#             │ visit_webpage │ Visits a webpage │ url (`string`): │
+#             │               │ at the given url │ The url of the  │
+#             │               │ and reads its    │ webpage to      │
+#             │               │ content as a     │ visit.          │
+#             │               │ markdown string. │                 │
+#             │               │ Use this to      │                 │
+#             │               │ browse webpages. │                 │
+#             │ final_answer  │ Provides a final │ answer (`any`): │
+#             │               │ answer to the    │ The final       │
+#             │               │ given problem.   │ answer to the   │
+#             │               │                  │ problem         │
+#             └───────────────┴──────────────────┴─────────────────┘
+#### Creando un side tarea para manager
+manager_agent.run(f"""
+{request_museums}
+
+Then make me a spatial map of the world using px.scatter_map, with the biggest museums 
+represented as scatter points of size depending on visitor count and color depending 
+on the average temperature in July.
+Save the map to saved_map.png, then return it!
+
+Here's an example of how to plot and return a map:
+import plotly.express as px
+df = px.data.carshare()
+fig = px.scatter_map(df, lat="centroid_lat", lon="centroid_lon", text="name", color="peak_hour",
+     color_continuous_scale=px.colors.sequential.Magma_r, size_max=15, zoom=1)
+fig.show()
+final_answer(fig)
+
+Do not invent any numbers! You must only use numbers sourced from the internet.
+""")
+#### Visualizing dict.-formatted image
+fig = manager_agent.python_executor.state["fig"]
+fig.update_layout(width=700, height=700)
+fig.show()
 
 
 

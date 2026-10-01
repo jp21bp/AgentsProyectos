@@ -1,5 +1,5 @@
 Secciones:
----C6---
+--- C6: LG Introduccion  ---
 * Estilo Antiguo
 * LangChain Introduccion
   - Chain Basico
@@ -28,7 +28,7 @@ Secciones:
   - Planilla para custom tool
   - Todo junto
 
----- C7 ----
+---- C7: LG Agent State y Graphs ----
 * ReAct Agente
   - Clase Agente
   - ReAct Loop
@@ -63,7 +63,7 @@ Secciones:
   - Exploring ".update_state.as_node" param.
 * Essay Writer
 
---- C8 ---
+--- C8: LG Memorias ---
 * Assistente Autonomo - Base
   - Router agente
   - Diferentes formas de ingenieria de prompt
@@ -87,7 +87,7 @@ Secciones:
   - Exploracion: invocacion y almacenando instrucciones
   - Actualizando las insrtucciones
 
---- C11 ---
+--- C11: Pydantic ---
 * Pydantic Basico
   - Validacion basica
   - Modelos avanzados y data coercion
@@ -101,3 +101,26 @@ Secciones:
 * Llamando Herramientas 
   - Modelo con regex
   - Funciones con Pydantic
+
+--- C12: Smolagents ---
+* Introduccion
+  - Ejemplo manual
+  - Creando herramientas con decorador para code agent
+  - Resolviendo ejemplo con code agente
+  - Resolviendo ejemplo con tool agente
+* Ejecutando Codigo Seguro
+  - Regla 1: Orden no definida se ignora
+  - Regla 2: Importacion son seguras
+  - Regla 3: bucles infinitos se previenen
+  - Creando herramiento con Tool clase
+  - Utilizando un sandbox
+* Monitoreando y Evaluando Code Agentes 
+  - Setup tracing
+  - Agente con tracer
+  - Snapshots en problema real
+  - Transformando snapshot en DF
+  - Evaluando el agente
+* Creando Deep Research Agente
+  - Creando variedad de herramientas
+  - Ejemplo
+  - Multi-agente researcher: researcher y manager
