@@ -52,7 +52,6 @@ Concretamente:
 * LLM y recuperaciones fija
 * Recuperacion densa
 * Recuperacion grafica
-* Recuperacion de verificacion (Opcional)
 * Adquisicion secuencial
 * Costo de adquisicion
 * Rango de respuesta correcta
@@ -105,7 +104,6 @@ Formalmente, dejemos:
 En este experimento existen 3 acciones de adquisiciones $a$:
 * Recuperacion densa
 * Recuperacion grafica
-* Recuperacion de verificacion (Opcional)
 
 Definimos:
 * Utilidad Marginal
@@ -232,10 +230,6 @@ El costo es individual a cada componente del experimento:
     - Entidades distintas
     - Pasos en la recuperacion
     - Tokens utilizados
-* Verificacion
-    - Numero de llamadas
-    - Documentos adicionales
-    - Tokens adicionales
 * Cost del Modelo
     - Numero de llamadas al LLM
     - Tokens de ingreso
@@ -461,27 +455,6 @@ Registrar los siguiente aspectos:
 Este estado se asigna $S_2$. 
 
 
-### Condicion 3 - Verificacion (Opcional)
-
-Dentro cada estado de evidencia $\{S_1, S_2\}$ actual, se hace una operacion adicional de verificacion. 
-
-Prompt simple: "Recuperar evidencia adicional con la intenciones de verificar la respuesta actual"
-
-Por cada estado $S_{1,2}$:
-$$
-S_{1,2} \rightarrow \text{recuperacion de verificacion} \rightarrow S_3
-$$
-
-
-Registrar los siguiente aspectos:
-* Prompt/query de verificacion
-* Evidencia recuperada
-* Evidence duplicada
-* Indicadores de contradiccion
-* Tokens adicionales
-* LLamadas de recuperacion adicionales
-* Respuesta final
-* Nivel de correcto
 
 
 
@@ -546,6 +519,58 @@ Objetivo: Se quiere identificar si **algunos estados** beneficiaron de adquisici
 * Resultado fuerte: existen algunos estados que se benefician de adquisicon adicional, mientras otros estados no
     - En este caso, el siguiente paso es investigar las propiedades de los estados que puedan predecir un beneficio antes de ejecutar la adquisicion.
 
+
+
+
+
+
+
+
+
+
+
+
+## 9. Fases
+
+Fase A - Conjunto de datos:
+* Descargar HotpotQA
+* Seleccionar 100 preguntas y almacenarlas fijamente
+    - No cambiar estas 100 preguntas
+
+Fase B - Modelo:
+* Seleccional un modelo abierto y pequeno
+* Hacer inferencias deterministicas
+* Implementar extraccion de respuestas
+* implementar extraccion de confianza
+* Validar la reproducibilidad de la respuesta y el modelo
+
+Fase C - Base:
+* Hacer inferencias de las 100 preguntas sin recuperacion
+* Almacenar todas las respuestas
+* Manualmente inspeccionar 20 respuestas
+
+Fase D - Recuperacion densa:
+* Crear dos recuperadores: 
+    - BM25 - recuperado lexical
+    - Dense embeddings - recuperador semantico 
+* Hacer recuperacion densa con $k=3$
+* Pasar esta evidence y la pregunta al LLM
+* almacenar los resultaados
+
+Fase E - Analisis
+* Calcular nivel de correcto
+* Calcular cobertura de evidencia
+* Calcular $\Delta U$
+* Examinal trasiciones positivas (U=1), neutral, y negativas( U=-1)
+
+Fase F - Grafo
+* Crear una representacion grafica de los datos
+* Implementar expansion grafica acotada
+* Ejecutar recuperacio grafica
+* Analizar los resultados
+
+Fase G - Comparar diferentes recuperaciones
+* Graficar $\Delta U = 1$ a traves diferentes categorias. 
 
 
 
